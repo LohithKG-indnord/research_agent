@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "agent", "runtimeExecutable": "python", "runtimeArgs": ["server.py"], "port": 3000 },
+    { "name": "agent-3001", "runtimeExecutable": "powershell", "runtimeArgs": ["-NoProfile", "-Command", "$env:PORT='3001'; python server.py"], "port": 3001 }
+  ]
+}

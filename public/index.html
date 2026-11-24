@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Account Fit Agent</title>
+  <link rel="stylesheet" href="/styles.css"/>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <span class="eyebrow">LEAD RESEARCH AGENT</span>
+    <h1>Will they buy? Know before you reach out.</h1>
+    <p>Name the companies you're targeting and say what you sell. The agent researches each one and tells you how well it fits, how likely it is to buy, and how your product could help it grow — every claim backed by a quote from the web.</p>
+  </section>
+
+  <div class="modes" role="tablist">
+    <button type="button" role="tab" data-mode="research" aria-selected="true">Research companies</button>
+    <button type="button" role="tab" data-mode="find" aria-selected="false">Find companies (ICP)</button>
+  </div>
+
+  <section class="panel" id="find" hidden>
+    <label class="wide">Ideal customer profile <span>who you want to sell to: industry, location, size, business model</span>
+      <textarea id="icp" placeholder="e.g. SaaS companies in Bengaluru with 50–500 employees selling to enterprises"></textarea></label>
+    <p><button type="button" id="find-go">Find 5 companies <b>→</b></button> <span class="mini">free web search plus one Exa company search and one Claude call · about $0.02–0.03</span></p>
+    <div id="find-status" class="mini" aria-live="polite"></div>
+    <div id="found" hidden>
+      <ul id="found-list"></ul>
+      <p class="found-actions"><button type="button" id="found-research">Research selected companies →</button> <button type="button" class="alt-button" id="found-copy">Copy selected</button> <button type="button" class="alt-button" id="found-clear">Clear suggestions</button></p>
+      <div id="clear-confirm" class="confirm-bar" role="alert" hidden><span id="clear-question"></span><button type="button" class="danger" id="clear-yes">Yes, clear</button><button type="button" class="alt-button" id="clear-no">Cancel</button></div>
+    </div>
+  </section>
+
+  <section class="panel" id="research">
+    <form id="run-form">
+      <label class="wide">Companies to research <span>one per line; add a domain after a comma if the name is ambiguous</span>
+        <textarea name="companies" required autofocus placeholder="Razorpay&#10;Zoho, zoho.com&#10;Swiggy"></textarea></label>
+      <label class="wide">Your product <span>what you sell and the problem it solves</span><textarea name="product" id="product" placeholder="e.g. AI voice agent that automates inbound support calls"></textarea></label>
+      <label>…or your website <span>optional; the agent reads it to understand what you sell</span><input name="product_url" inputmode="url" placeholder="e.g. yourcompany.com"></label>
+      <label>…or a deck / brochure <span>optional; about your company or your product — PDF, PPTX or text, up to 10 MB</span><input type="file" id="product-file" accept=".pdf,.pptx,.txt,.md"></label>
+      <label class="wide">Ideal customer <span>optional</span><textarea name="criteria" id="criteria" placeholder="e.g. B2B or consumer companies with 200–5,000 staff and a large support team, India or US"></textarea></label>
+      <label class="check wide"><input type="checkbox" name="fresh" value="1"> Research again even if a company was researched in the last 7 days <span>(otherwise that research is reused at no cost)</span></label>
+      <button>Research companies <b>→</b></button>
+    </form>
+    <div id="status" aria-live="polite"></div>
+    <ol id="log" hidden></ol>
+  </section>
+
+  <section id="results" hidden>
+    <div class="results-head">
+      <div><span class="eyebrow">ACCOUNT ASSESSMENTS</span><h2 id="results-title"></h2><p id="results-meta"></p></div>
+      <div class="actions"><label class="inline-select">What <select id="dl-what"><option value="companies">Company research</option><option value="leads">Accepted leads</option></select></label>
+        <label class="inline-select">Format <select id="dl-format"><option value="xlsx">Excel (.xlsx)</option><option value="pdf">PDF report (print / save as PDF)</option><option value="csv">CSV</option><option value="json">JSON (everything)</option></select></label>
+        <button type="button" id="dl-go">Download</button></div>
+    </div>
+    <div id="cards"></div>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
