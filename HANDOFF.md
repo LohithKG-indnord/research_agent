@@ -38,7 +38,7 @@ python server.py         # http://localhost:3000 (set PORT=3001 if 3000 is taken
 | Key | Purpose |
 |---|---|
 | `ANTHROPIC_API_KEY` | **Required.** |
-| `CLAUDE_MODEL` | Model for judgement. The code defaults to `claude-opus-5-5`; this project has been run with `claude-sonnet-5`, which is cheaper. |
+| `CLAUDE_MODEL` | Model for judgement (research, scoring, messages, notes, growth plans). Defaults to `claude-sonnet-5-5` (Claude Sonnet 5.5). |
 | `CHAT_MODEL` | Model for the chat assistant. Defaults to `claude-haiku-5-5`. |
 | `EXA_API_KEY` | Paid search, about $0.007 per search, used only as a top-up. |
 | `HUNTER_API_KEY` / `APOLLO_API_KEY` | Lead lookups. Apollo needs a paid plan. |

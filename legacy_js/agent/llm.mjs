@@ -3,7 +3,7 @@ import { recorded } from "./db.mjs";
 
 let client;
 // $ per million tokens [input, output].
-const PRICES = { "claude-sonnet-5": [2, 10], "claude-sonnet-5-5": [2, 10], "claude-haiku-5-5": [0.1, 0.5], "claude-opus-5-5": [4, 20] };
+const PRICES = { "claude-sonnet-5-5": [2, 10], "claude-haiku-5-5": [0.1, 0.5], "claude-opus-5-5": [4, 20] };
 export const model = () => process.env.CLAUDE_MODEL || "claude-opus-5-5";
 
 /**

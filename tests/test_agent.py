@@ -673,11 +673,11 @@ def test_only_decision_makers_are_kept_and_directors_only_at_large_companies(mon
 
 def test_cached_instructions_are_billed_at_their_real_price(monkeypatch):
     from agent import llm
-    monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-5")  # $2 in / $10 out per million
+    monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-5-5")  # $2 in / $10 out / $0.10 cache read per million
     plain = llm._usage({"input_tokens": 10_000, "output_tokens": 1_000})
     cached = llm._usage({"input_tokens": 7_500, "cache_read_input_tokens": 2_500, "output_tokens": 1_000})
     written = llm._usage({"input_tokens": 7_500, "cache_creation_input_tokens": 2_500, "output_tokens": 1_000})
-    assert plain["usd"] == 0.03 and round(cached["usd"], 4) == 0.0255 and round(written["usd"], 5) == 0.03125
+    assert plain["usd"] == 0.03 and round(cached["usd"], 5) == 0.02525 and round(written["usd"], 5) == 0.03125
     assert cached["input_tokens"] == 10_000
 
 

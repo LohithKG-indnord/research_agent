@@ -76,7 +76,7 @@ Each researched company gets a card with these tabs, in order:
 
 The **Ask about a company** button opens a side panel. Search for one of your researched companies, then ask questions, such as how they could grow or whether your product fits. Answers come from the saved research and cite their sources.
 
-- It uses Haiku, about $0.001 per answer.
+- It uses Claude Haiku 5.5 (`claude-haiku-5-5`), about $0.001 per answer.
 - "Search the web too" adds free DonSeTch results.
 - The last 6 exchanges are sent as context, and chats are saved with the company.
 
@@ -94,7 +94,7 @@ Score weights (`WEIGHTS` in `agent/pipeline.py`): has the problem 30, profile fi
 
 **Claude.**
 
-- `CLAUDE_MODEL` makes the judgement calls. The code default is `claude-opus-5-5`; `claude-sonnet-5` is cheaper and works well.
+- `CLAUDE_MODEL` makes the judgement calls (research, scoring, messages, notes, growth plans). Default `claude-sonnet-5-5` (Claude Sonnet 5.5).
 - `CHAT_MODEL` answers chat questions (default `claude-haiku-5-5`).
 - Calls use structured JSON output. If a schema is refused as "too large", the call falls back to a plain prompt.
 - System prompts are cached.

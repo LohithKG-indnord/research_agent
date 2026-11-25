@@ -9,21 +9,24 @@ import anthropic
 from .db import recorded
 
 _client = None
-# $ per million tokens [input, output].
-PRICES = {"claude-sonnet-5": (2, 10), "claude-sonnet-5-5": (2, 10), "claude-haiku-5-5": (0.1, 0.5), "claude-opus-5-5": (4, 20)}
+# $ per million tokens [input, output, cache read (default: a tenth of input)].
+PRICES = {"claude-sonnet-5-5": (2, 10, 0.1), "claude-haiku-5-5": (0.1, 0.5), "claude-opus-5-5": (4, 20)}
 
 
 def model():
-    return os.environ.get("CLAUDE_MODEL") or "claude-opus-5-5"
+    return os.environ.get("CLAUDE_MODEL") or "claude-sonnet-5-5"
 
 
 def _usage(u, name=None):
     price = PRICES.get(name or model())
     written, read = u.get("cache_creation_input_tokens") or 0, u.get("cache_read_input_tokens") or 0
     input_tokens = u["input_tokens"] + written + read
-    # Cached instructions: writing them costs 1.25x, reading them back 0.1x the input price.
-    billed = u["input_tokens"] + written * 1.25 + read * 0.1
-    return {"input_tokens": input_tokens, "output_tokens": u["output_tokens"], "usd": (billed * price[0] + u["output_tokens"] * price[1]) / 1e6 if price else None}
+    if not price:
+        return {"input_tokens": input_tokens, "output_tokens": u["output_tokens"], "usd": None}
+    # Cached instructions: writing them costs 1.25x the input price; reading them back has its own price.
+    read_price = price[2] if len(price) > 2 else price[0] * 0.1
+    usd = ((u["input_tokens"] + written * 1.25) * price[0] + read * read_price + u["output_tokens"] * price[1]) / 1e6
+    return {"input_tokens": input_tokens, "output_tokens": u["output_tokens"], "usd": usd}
 
 
 async def ask_json(system, prompt, schema, effort="medium", max_tokens=16000):
