@@ -18,26 +18,46 @@ fetch('/api/config').then(r => r.json()).then(async c => {
   config = c;
   // Bring back the last result after a reload so it can still be reviewed.
   const latest = await fetch('/api/latest').then(r => r.json());
-  if (/^named-v([3-9]|\d{2,})$/.test(latest?.run?.prompt_version || '') &&!live.length && !lastResult && !form.querySelector('button').disabled) { lastResult = latest; renderResult(latest); }
+  if (/^named-v([3-9]|\d{2,})$/.test(latest?.run?.prompt_version || '') &&!live.length && !lastResult && !form.querySelector('button:not([type=button])').disabled) { lastResult = latest; renderResult(latest); }
   if (c.product) $('#product').value = c.product;
   if (c.criteria) $('#criteria').value = c.criteria;
   if (!c.ready) status.textContent = 'Add ANTHROPIC_API_KEY to .env and restart the server to run the agent.';
 }).catch(() => {});
 
+// The form's fields, with the uploaded product file (if any) as base64.
+async function formBody() {
+  const body = Object.fromEntries(new FormData(form));
+  const file = $('#product-file').files[0];
+  if (file) {
+    if (file.size > 10e6) throw new Error('Upload a file under 10 MB.');
+    const url = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => fail(r.error); r.readAsDataURL(file); });
+    body.product_file = { name: file.name, data: url.slice(url.indexOf(',') + 1) };
+  }
+  return body;
+}
+
+// Download what the agent understood about the user's own company, as a Word file.
+$('#profile-go').onclick = async () => {
+  const say = $('#profile-status'), button = $('#profile-go');
+  button.disabled = true; say.textContent = 'Reading your product material…';
+  try {
+    const res = await fetch('/api/profile.docx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(await formBody()) });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not make the profile.');
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await res.blob()), download: 'company-profile.docx' });
+    a.click(); URL.revokeObjectURL(a.href);
+    say.textContent = 'Downloaded company-profile.docx.';
+  } catch (err) { say.textContent = err.message; }
+  button.disabled = false;
+};
+
 form.addEventListener('submit', async e => {
   e.preventDefault();
-  const button = form.querySelector('button');
+  const button = form.querySelector('button:not([type=button])');
   button.disabled = true; live.length = 0; lastResult = null;
   log.replaceChildren(); log.hidden = false; $('#results').hidden = true;
   status.textContent = 'Starting…';
   try {
-    const body = Object.fromEntries(new FormData(form));
-    const file = $('#product-file').files[0];
-    if (file) {
-      if (file.size > 10e6) throw new Error('Upload a file under 10 MB.');
-      const url = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => fail(r.error); r.readAsDataURL(file); });
-      body.product_file = { name: file.name, data: url.slice(url.indexOf(',') + 1) };
-    }
+    const body = await formBody();
     const res = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!res.ok || !res.body) throw new Error(`Server returned ${res.status}`);
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -439,3 +459,117 @@ $('#found-research').onclick = () => {
   $('#run-form [name=companies]').value = lines.join('\n');
   showMode('research'); $('#run-form [name=companies]').focus();
 };
+
+// ---------- Chat assistant: pick a researched company, then ask about it ----------
+let chatWith = null; // the company being discussed: {run_id, company_id, name, ...}
+const chatLog = $('#chat-log');
+const postJson = async (url, body) => {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+  return data;
+};
+function openChat(open) {
+  $('#chat').hidden = !open; $('#chat-open').hidden = open; $('#chat-open').setAttribute('aria-expanded', open);
+  if (open && !chatWith) pickCompany();
+  if (open && chatWith) $('#chat-q').focus();
+}
+$('#chat-open').onclick = () => openChat(true);
+$('#chat-close').onclick = () => openChat(false);
+$('#chat-change').onclick = () => pickCompany();
+
+// Answers are plain text: escaped first, then **bold**, "- " bullets and links.
+function formatAnswer(text) {
+  const inline = s => s.split(/(https?:\/\/[^\s)\]]+)/).map((p, i) => i % 2
+    ? `<a href="${safeUrl(p.replace(/[.,;:]+$/, ''))}" target="_blank" rel="noreferrer">${esc(host(p))}</a>`
+    : esc(p).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')).join('');
+  let html = '', inList = false;
+  for (const line of String(text).split('\n')) {
+    const item = line.match(/^\s*[-*•]\s+(.*)/);
+    if (item) { if (!inList) { html += '<ul>'; inList = true; } html += `<li>${inline(item[1])}</li>`; continue; }
+    if (inList) { html += '</ul>'; inList = false; }
+    if (line.trim()) html += `<p>${inline(line)}</p>`;
+  }
+  return html + (inList ? '</ul>' : '');
+}
+function addMsg(who, html) {
+  const div = document.createElement('div');
+  div.className = `msg ${who}`; div.innerHTML = html;
+  chatLog.append(div); chatLog.scrollTop = chatLog.scrollHeight;
+  return div;
+}
+function chips(items) {
+  const box = document.createElement('div'); box.className = 'chips';
+  for (const [label, act] of items) {
+    const b = Object.assign(document.createElement('button'), { type: 'button', textContent: label });
+    b.onclick = () => { box.remove(); act(); };
+    box.append(b);
+  }
+  chatLog.append(box); chatLog.scrollTop = chatLog.scrollHeight;
+}
+const answerHtml = m => formatAnswer(m.text) + (m.sources?.length || m.usd != null
+  ? `<span class="mini">${m.sources?.length ? `Web: ${m.sources.map(u => `<a href="${safeUrl(u)}" target="_blank" rel="noreferrer">${esc(host(u))}</a>`).join(' · ')}` : ''}${m.usd != null ? `${m.sources?.length ? ' · ' : ''}cost $${Number(m.usd).toFixed(4)}` : ''}</span>` : '');
+
+async function pickCompany() {
+  chatWith = null; $('#chat-form').hidden = true; $('#chat-change').hidden = true; chatLog.innerHTML = '';
+  addMsg('bot', '<p>Which company should we dig into?</p>');
+  try {
+    const { companies } = await postJson('/api/chat/companies', {});
+    if (!companies.length) return addMsg('bot', '<p>No researched companies yet. Research one first, then ask about it here.</p>');
+    companySearch(companies);
+  } catch (err) { addMsg('bot', `<p>${esc(err.message)}</p>`); }
+}
+
+// A search box instead of every company at once: the 3 most recent show until you type, then up to 6 matches.
+function companySearch(companies) {
+  const box = document.createElement('div'); box.className = 'company-search';
+  box.innerHTML = '<input type="search" placeholder="Search a researched company…" aria-label="Search a researched company"><div class="chips" role="listbox"></div>';
+  const input = box.querySelector('input'), list = box.querySelector('.chips');
+  const label = c => `${c.name} · ${c.fit_score} ${c.tier}${c.messages ? ` · ${c.messages / 2} asked` : ''}`;
+  const pick = c => { box.remove(); chooseCompany(c); };
+  const show = () => {
+    const q = input.value.trim().toLowerCase();
+    const hits = q ? companies.filter(c => `${c.name} ${c.domain || ''}`.toLowerCase().includes(q)).slice(0, 6) : companies.slice(0, 3);
+    list.innerHTML = '';
+    if (!q) list.append(Object.assign(document.createElement('span'), { className: 'mini', textContent: 'Recent:' }));
+    if (!hits.length) list.append(Object.assign(document.createElement('span'), { className: 'mini', textContent: 'No researched company matches. Research it first, then ask here.' }));
+    for (const c of hits) list.append(Object.assign(document.createElement('button'), { type: 'button', textContent: label(c), onclick: () => pick(c) }));
+  };
+  input.oninput = show;
+  input.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); list.querySelector('button')?.click(); } }; // Enter takes the first match
+  show(); chatLog.append(box); input.focus();
+}
+
+async function chooseCompany(c) {
+  chatWith = c; chatLog.innerHTML = '';
+  $('#chat-change').hidden = false;
+  try {
+    const data = await postJson('/api/chat', { run_id: c.run_id, company_id: c.company_id });
+    addMsg('bot', `<p>Okay, <b>${esc(data.name)}</b> (score ${esc(data.fit_score)}, ${esc(data.tier)}, ${esc(data.willingness_to_buy)} willingness to buy). What would you like to know?</p>`);
+    for (const m of data.chat) addMsg(m.role === 'user' ? 'me' : 'bot', m.role === 'user' ? `<p>${esc(m.text)}</p>` : answerHtml(m));
+    const fit = (data.fit_score ?? 0) >= 40;
+    chips(['How can they grow their revenue?', 'Can our product do this for them?', fit ? 'Who should I contact first, and with what?' : 'What would change their mind about buying?',
+      'What is their biggest objection, and how do I answer it?', 'Draft a 3-line opener for their decision maker.'].map(q => [q, () => sendQuestion(q)]));
+    $('#chat-form').hidden = false; $('#chat-q').focus();
+  } catch (err) { addMsg('bot', `<p>${esc(err.message)}</p>`); chatWith = null; }
+}
+
+async function sendQuestion(question) {
+  question = question.trim();
+  if (!question || !chatWith) return;
+  const go = $('#chat-go'), web = $('#chat-web').checked;
+  chatLog.querySelectorAll('.chips').forEach(x => x.remove());
+  addMsg('me', `<p>${esc(question)}</p>`);
+  const wait = addMsg('bot', `<span class="typing" role="status" aria-label="${web ? 'Searching the web and thinking' : 'Thinking'}"><i></i><i></i><i></i></span>${web ? ' <span class="mini">searching the web…</span>' : ''}`);
+  go.disabled = true; $('#chat-q').value = ''; growInput();
+  try {
+    const data = await postJson('/api/chat', { run_id: chatWith.run_id, company_id: chatWith.company_id, question, web });
+    wait.innerHTML = answerHtml(data.chat.at(-1));
+  } catch (err) { wait.innerHTML = `<p>${esc(err.message)}</p>`; }
+  go.disabled = false; chatLog.scrollTop = chatLog.scrollHeight; $('#chat-q').focus();
+}
+$('#chat-form').onsubmit = e => { e.preventDefault(); sendQuestion($('#chat-q').value); };
+// The question box grows with what you type, up to about five lines.
+const growInput = () => { const q = $('#chat-q'); q.style.height = 'auto'; q.style.height = `${Math.min(q.scrollHeight, 120)}px`; };
+$('#chat-q').oninput = growInput;
+$('#chat-q').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuestion($('#chat-q').value); } }; // Shift+Enter = new line

@@ -37,7 +37,8 @@
         <textarea name="companies" required autofocus placeholder="Razorpay&#10;Zoho, zoho.com&#10;Swiggy"></textarea></label>
       <label class="wide">Your product <span>what you sell and the problem it solves</span><textarea name="product" id="product" placeholder="e.g. AI voice agent that automates inbound support calls"></textarea></label>
       <label>…or your website <span>optional; the agent reads it to understand what you sell</span><input name="product_url" inputmode="url" placeholder="e.g. yourcompany.com"></label>
-      <label>…or a deck / brochure <span>optional; about your company or your product — PDF, PPTX or text, up to 10 MB</span><input type="file" id="product-file" accept=".pdf,.pptx,.txt,.md"></label>
+      <label>…or a deck / document <span>optional; about your company or your product — PDF, PowerPoint (PPTX), Word (DOCX) or text, up to 10 MB</span><input type="file" id="product-file" accept=".pdf,.pptx,.docx,.txt,.md"></label>
+      <p class="wide profile-row"><button type="button" class="alt-button" id="profile-go">Download my company profile (Word)</button> <span class="mini">what the agent understood about your company from the product text, website or document above · about $0.01, free if unchanged</span> <span id="profile-status" class="mini" aria-live="polite"></span></p>
       <label class="wide">Ideal customer <span>optional</span><textarea name="criteria" id="criteria" placeholder="e.g. B2B or consumer companies with 200–5,000 staff and a large support team, India or US"></textarea></label>
       <label class="check wide"><input type="checkbox" name="fresh" value="1"> Research again even if a company was researched in the last 7 days <span>(otherwise that research is reused at no cost)</span></label>
       <button>Research companies <b>→</b></button>
@@ -56,6 +57,15 @@
     <div id="cards"></div>
   </section>
 </main>
+<button type="button" id="chat-open" class="chat-fab" aria-controls="chat" aria-expanded="false"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Ask about a company</button>
+<aside id="chat" class="chat" aria-label="Research assistant" hidden>
+  <header><span class="chat-avatar" aria-hidden="true">AI</span><div class="chat-title"><b>Research assistant</b><span>Answers from your research</span></div><button type="button" class="chat-change" id="chat-change" hidden>Change company</button><button type="button" id="chat-close" class="chat-x" aria-label="Close">×</button></header>
+  <div id="chat-log" class="chat-log" aria-live="polite"></div>
+  <form id="chat-form" hidden>
+    <div class="chat-input"><textarea id="chat-q" rows="1" placeholder="Ask anything about this company…" aria-label="Your question"></textarea><button id="chat-go" aria-label="Send"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+    <label class="check chat-web"><input type="checkbox" id="chat-web"> Search the web too <span>(free)</span></label>
+  </form>
+</aside>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -17,8 +17,8 @@ def model():
     return os.environ.get("CLAUDE_MODEL") or "claude-opus-5-5"
 
 
-def _usage(u):
-    price = PRICES.get(model())
+def _usage(u, name=None):
+    price = PRICES.get(name or model())
     written, read = u.get("cache_creation_input_tokens") or 0, u.get("cache_read_input_tokens") or 0
     input_tokens = u["input_tokens"] + written + read
     # Cached instructions: writing them costs 1.25x, reading them back 0.1x the input price.
@@ -119,3 +119,29 @@ def conform(value, schema):
     if kind == "boolean":
         return value if isinstance(value, bool) else False
     return value
+
+
+def chat_model():
+    """The chat assistant answers from research it is handed, so the small, cheap model does it well (about 20x cheaper)."""
+    return os.environ.get("CHAT_MODEL") or "claude-haiku-5-5"
+
+
+async def ask_text(system, context, messages, max_tokens=900):
+    """A plain-text answer for the chat. `context` (the company's research) is cached, so follow-ups re-read it at a tenth of the price."""
+    global _client
+    key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
+    if not key:
+        raise RuntimeError("Set ANTHROPIC_API_KEY (or CLAUDE_API_KEY) in .env to use the chat.")
+    _client = _client or anthropic.AsyncAnthropic(api_key=key, max_retries=4)
+    name = chat_model()
+    blocks = [{"type": "text", "text": system}, {"type": "text", "text": context, "cache_control": {"type": "ephemeral"}}]
+
+    async def go():
+        return (await _client.messages.create(model=name, max_tokens=max_tokens, system=blocks, messages=messages)).model_dump(mode="json")
+
+    def meta(raw):
+        u = _usage(raw["usage"], name)
+        return {"input_tokens": u["input_tokens"], "output_tokens": u["output_tokens"], "cost": u["usd"]}
+    msg = await recorded("anthropic", "chat", {"model": name, "messages": len(messages)}, go, meta)
+    text = "".join(b.get("text", "") for b in msg["content"] if b.get("type") == "text").strip()
+    return {"text": text or "I couldn't produce an answer to that. Try rephrasing it.", "usage": _usage(msg["usage"], name)}

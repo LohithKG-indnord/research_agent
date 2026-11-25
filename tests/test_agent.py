@@ -763,3 +763,81 @@ def test_finding_companies_from_an_icp_keeps_only_named_ones_and_never_repeats(m
     assert got["usd"] == 0.022
     with pytest.raises(ValueError, match="Describe the companies"):
         run(discover.find_companies({"icp": "  "}))
+
+
+def test_the_chat_lists_researched_companies_answers_from_research_and_keeps_history(monkeypatch, tmp_path):
+    from agent import chat as chat_mod
+    from agent import web as web_mod
+    run_id = "13131313-1313-1313-1313-131313131313"
+    write(tmp_path / f"{run_id}.json", {"run": {"run_id": run_id}, "campaign": {"generated_at": "2026-11-24T08:00:00.000Z", "icp": {"product": "Flow AI platform"}},
+                                        "companies": [{"id": "c1", "name": "Acme", "domain": "acme.com", "fit_score": 45, "tier": "Nurture", "willingness_to_buy": "low",
+                                                       "summary": "A wealth firm", "people": [], "review": {"decision": None}, "evidence": [], "financials": {},
+                                                       "user_notes": {"text": "Budget review in March"}}]})
+    listed = run(chat_mod.chat_companies({}, tmp_path))["companies"]
+    assert [(c["name"], c["company_id"], c["messages"]) for c in listed] == [("Acme", "c1", 0)]
+    sent = []
+
+    async def fake_ask(system, context, messages, max_tokens=900):
+        sent.append((context, messages))
+        return {"text": f"Answer {len(sent)}", "usage": {"usd": 0.001}}
+
+    async def fake_donsetch(query, max_results):
+        return {"rows": [{"url": "https://news.example/acme", "title": "Acme expands", "snippet": "Acme opens a Dubai office."}], "cost": 0}
+
+    async def fake_fetch(url, max_chars=6000):
+        return None
+    monkeypatch.setattr(chat_mod, "ask_text", fake_ask)
+    monkeypatch.setitem(web_mod.engines, "donsetch", fake_donsetch)
+    monkeypatch.setattr(web_mod, "fetch_page", fake_fetch)
+    ask = {"run_id": run_id, "company_id": "c1"}
+    assert run(chat_mod.chat(ask, tmp_path))["chat"] == [] and not sent  # opening a company costs nothing
+    got = run(chat_mod.chat({**ask, "question": "How can they grow?"}, tmp_path))
+    assert "A wealth firm" in sent[0][0] and "Budget review in March" in sent[0][0] and "Flow AI platform" in sent[0][0]
+    assert [m["text"] for m in got["chat"]] == ["How can they grow?", "Answer 1"]
+    got = run(chat_mod.chat({**ask, "question": "Any news?", "web": True}, tmp_path))
+    assert "Dubai office" in sent[1][1][-1]["content"] and got["chat"][-1]["sources"] == ["https://news.example/acme"]
+    assert [m["role"] for m in sent[1][1]] == ["user", "assistant", "user"]  # follow-ups carry the conversation
+    for i in range(30):
+        run(chat_mod.chat({**ask, "question": f"q{i}"}, tmp_path))
+    assert len(sent[-1][1]) == chat_mod.HISTORY * 2 + 1 and len(run(chat_mod.chat(ask, tmp_path))["chat"]) == chat_mod.KEEP
+
+
+def test_word_docx_files_are_read_and_old_doc_files_get_a_clear_message():
+    import base64
+    import io
+    import zipfile
+    from agent import pipeline
+    doc = io.BytesIO()
+    with zipfile.ZipFile(doc, "w") as z:
+        z.writestr("word/document.xml", '<w:document><w:body><w:p><w:r><w:t>Indnord builds</w:t></w:r><w:r><w:t xml:space="preserve"> AI digital employees</w:t></w:r></w:p>'
+                                        '<w:p><w:r><w:t>for banks &amp; telecoms</w:t></w:r></w:p></w:body></w:document>')
+    b64 = lambda raw: base64.b64encode(raw).decode()
+    assert pipeline.file_text("profile.docx", b64(doc.getvalue())) == "Indnord builds  AI digital employees\nfor banks & telecoms"
+    for name, raw, why in [("profile.docx", b"not a zip", "isn't a real DOCX"), ("profile.doc", b"\xd0\xcf\x11\xe0", "Old .doc files"), ("x.exe", b"x", "PDF, PPTX, DOCX")]:
+        with pytest.raises(ValueError, match=why):
+            pipeline.file_text(name, b64(raw))
+
+
+def test_the_company_profile_is_made_once_cached_and_written_as_a_word_file(monkeypatch, tmp_path):
+    import io
+    from docx import Document
+    from agent import profile
+    calls = []
+
+    async def fake_ask(system, prompt, schema, **_):
+        calls.append(prompt)
+        return {"data": {"usable": True, "problem": "", "company": "Indnord", "summary": "Indnord builds FLOW.", "category": "AI operating system",
+                         "offerings": [{"name": "FLOW", "what": "governed AI digital employees"}], "problems_solved": ["Slow delivery"],
+                         "customers": {"industries": ["Banking"], "company_size": "Enterprise", "buyer_roles": ["CIO"], "regions": ["India"]},
+                         "proof_points": ["35% lower TCO for a telecom"], "differentiators": [], "product_description": "FLOW deploys digital employees."},
+                "usage": {"usd": 0.01}}
+    monkeypatch.setattr(profile, "ask_json", fake_ask)
+    body = {"product": "We sell FLOW, an AI operating system for enterprises."}
+    first = run(profile.company_profile(body, tmp_path))
+    again = run(profile.company_profile(body, tmp_path))
+    assert len(calls) == 1 and again == first and first["sources"] == ["your product description"]  # same input: served from the cache, free
+    text = "\n".join(p.text for p in Document(io.BytesIO(profile.profile_docx(first))).paragraphs)
+    assert "Company profile: Indnord" in text and "FLOW: governed AI digital employees" in text and "Industries: Banking" in text
+    assert "What sets you apart" not in text  # empty sections are left out
+    with pytest.raises(ValueError, match="Describe your product"):
+        run(profile.company_profile({}, tmp_path))

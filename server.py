@@ -15,9 +15,11 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from agent.capacity import buying_capacity
+from agent.chat import chat, chat_companies
 from agent.db import sync_db
 from agent.discover import find_companies
 from agent.export import xlsx
+from agent.profile import company_profile, profile_docx
 from agent.people import MAX_PEOPLE, apply_notes, case_study, growth_plan, enrich_company, mark_outreach, people_providers, review_company, rewrite_message, save_lead
 from agent.pipeline import LEADS_DIR, run_agent
 from agent.rerank import warmup
@@ -109,7 +111,7 @@ async def read_json(request, limit=50_000):
     return (body if isinstance(body, dict) else {}), None
 
 
-ACTIONS = {"/api/review": review_company, "/api/people": enrich_company, "/api/save-lead": save_lead, "/api/message": rewrite_message, "/api/outreach": mark_outreach, "/api/notes": apply_notes, "/api/case-study": case_study, "/api/growth": growth_plan, "/api/discover": find_companies}
+ACTIONS = {"/api/review": review_company, "/api/people": enrich_company, "/api/save-lead": save_lead, "/api/message": rewrite_message, "/api/outreach": mark_outreach, "/api/notes": apply_notes, "/api/case-study": case_study, "/api/growth": growth_plan, "/api/discover": find_companies, "/api/chat": chat, "/api/chat/companies": chat_companies}
 
 
 @app.post("/api/review")
@@ -121,6 +123,8 @@ ACTIONS = {"/api/review": review_company, "/api/people": enrich_company, "/api/s
 @app.post("/api/case-study")
 @app.post("/api/growth")
 @app.post("/api/discover")
+@app.post("/api/chat")
+@app.post("/api/chat/companies")
 async def action(request: Request):
     body, error = await read_json(request)
     if error:
@@ -141,6 +145,18 @@ async def export_xlsx(request: Request):
     except ValueError as e:
         return reply(400, {"error": str(e)})
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/profile.docx")
+async def profile_file(request: Request):
+    body, error = await read_json(request, 14_000_000)  # room for a 10 MB document sent as base64
+    if error:
+        return error
+    try:
+        data = profile_docx(await company_profile(body))
+    except ValueError as e:
+        return reply(400, {"error": str(e)})
+    return Response(data, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/run")
