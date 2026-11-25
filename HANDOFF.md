@@ -93,11 +93,11 @@ Each result's `usage` field records the real cost.
 
 - **Unreachable websites** stop after 45 seconds with an error. Before that cap, a dead site could hang for minutes.
 - **Websites that need JavaScript** have no readable text. The user should upload a document instead.
-- **Port:** 3000 is the default; 3001 was used locally because Docker held 3000 (`.claude/launch.json` has both).
+- **Port:** 3000 is the default;
 - **Buying capacity** uses the same percentage ranges for every industry. Industry-specific ranges are a possible improvement.
 - **Financials and case studies** are often "Unknown" or absent for small or private companies. This is by design: the agent shows nothing rather than an unverified figure.
 - **Deleting a person** has no screen. Remove them from the `leads/` JSON files and `leads.db` by hand (see README).
-- **DonSeTch** (AGPL) scrapes public search engines. Review its licence and terms before production use.
+- **DonSeTch** (AGPL) sends each query to public search endpoints without a key (Google's search widget, Keenable, Exa's and Parallel's public MCP servers), mostly US services with no data processing agreement. Review its licence and terms before production use.
 - **On Windows**, the Claude desktop app's sandbox can hide files it writes under AppData. Keep tools inside the project folder.
 
 ## State at handoff

@@ -115,7 +115,7 @@ Each result records tokens, searches and cost under `usage`.
 - Page and document content is treated as data, never as instructions.
 - `robots.txt` is not checked.
 - The server only accepts requests from this computer.
-- DonSeTch is AGPL-3.0 and scrapes public search engines. Review its licence and their terms before production use.
+- DonSeTch is AGPL-3.0 and sends each query to public search endpoints without a key (Google's search widget, Keenable, Exa's and Parallel's public MCP servers), mostly US services with no data processing agreement. Review its licence and their terms before production use.
 
 ## Leads
 
