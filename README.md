@@ -66,7 +66,7 @@ Each researched company gets a card with these tabs, in order:
 3. **Growth plan:** business and technical ways the company could grow, independent of your product. Written when you first open the tab.
 4. **Recommendation:** how your product addresses those points, other ways it can help, and the path to win. Also includes the **case study** button: one similar, independent company that grew, its revenue figures and what it implemented. Group companies and lookalike lists are excluded. If no proven case is found, nothing is shown.
 5. **Your notes:** add facts the web couldn't verify. The agent then re-scores the company and rewrites the plan.
-6. **Leads:** decision makers only (see Leads below), each with Accept/Reject.
+6. **Leads:** Director level and above only (see Leads below), each with Accept/Reject.
 7. **Messages:** an email, a LinkedIn note and a follow-up for each accepted lead, with Copy, Open in Gmail and Rewrite. Nothing is sent automatically.
 8. **Evidence:** the quotes behind the scores (collapsed by default).
 
@@ -123,14 +123,13 @@ Accepting a company looks up its buyers with the first provider that has a key: 
 
 **Who is returned:**
 
-- Only decision makers: C-level, founders, owners, partners and VPs.
-- Directors and heads too, but only at companies with 1,000+ staff.
+- Director level and above, at every company: C-level, founders, owners, presidents, partners, VPs, directors and heads.
 - Junior titles are filtered out, including people found in earlier lookups.
 
 **Credits:**
 
 - Apollo filters titles *before* unlocking contacts, so filtered-out people cost nothing.
-- Hunter asks for executives only, and runs its department search only for large companies.
+- Hunter asks for executives only, and adds a department search when the title search finds fewer than 5 people.
 - At most 5 people per lookup.
 - A repeated search is never charged again, and "Find more leads" returns only people not seen before.
 - The Leads tab shows all leads, including earlier ones, by default.

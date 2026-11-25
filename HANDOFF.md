@@ -11,7 +11,7 @@ The user describes what they sell (text, their website, or a PDF / PPTX / DOCX /
 3. Shows **financials** (revenue, growth, profit) only when the number is on the source page, plus an estimated **buying capacity**.
 4. Writes a **growth plan** (business and technical ideas) and a **recommendation** (how the user's product helps), on demand.
 5. Finds one **case study**: a similar, independent company that grew, with proof (on demand, uses Exa).
-6. On accept, finds **decision makers only** (C-level, founders, VPs; directors only at 1,000+ staff) via Hunter or Apollo, and drafts outreach messages. Nothing is ever sent automatically.
+6. On accept, finds **Director level and above only** (C-level, founders, VPs, directors, heads; any company size) via Hunter or Apollo, and drafts outreach messages. Nothing is ever sent automatically.
 
 Other features:
 

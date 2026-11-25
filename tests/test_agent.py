@@ -308,12 +308,12 @@ def test_hunter_tries_buyer_titles_then_senior_people_in_the_buyer_department_th
     assert re.search(r"limit=5&offset=0&department=support&seniority=executive$", urls[1])
     assert re.search(r"limit=3&offset=0&seniority=executive&decision_maker=true", urls[2])
     assert [[p["name"], p["reason"]] for p in company["people"]] == [["Sam Ko", "Decision maker (no one found with the buyer titles)"]]
-    # a small company skips the department search: it would mostly return directors, which aren't kept, and still cost a credit
+    # a small company gets the department search too: directors and heads are kept at every company size
     write(tmp_path / f"{run_id}.json", {"run": {"run_id": run_id}, "companies": [{"id": "c1", "domain": "acme.com", "people": [], "review": {"decision": None}, "buyer_titles": ["CEO"], "buyer_departments": ["support"],
                                                                          "financials": {"employees": {"value": "51-200"}}}]})
     urls.clear()
     run(review_company({"run_id": run_id, "company_id": "c1", "decision": "accepted"}, tmp_path))
-    assert len(urls) == 2 and not any("department=" in u for u in urls)
+    assert len(urls) == 3 and "department=support" in urls[1]
 
 
 def test_finding_more_leads_pages_through_hunter_and_never_returns_anyone_seen_before(monkeypatch, tmp_path):
@@ -654,17 +654,16 @@ def test_excel_export_is_a_real_workbook_and_web_text_never_becomes_a_formula():
             xlsx(bad)
 
 
-def test_only_decision_makers_are_kept_and_directors_only_at_large_companies(monkeypatch, tmp_path):
+def test_only_director_and_above_are_kept_at_every_company(monkeypatch, tmp_path):
     from agent.people import senior_enough
-    for title, small, large in [("CEO", True, True), ("Co-Founder & CTO", True, True), ("VP Engineering", True, True), ("Managing Director", True, True),
-                                ("Director of Operations", False, True), ("Head of Support", False, True), ("Product Manager", False, False),
-                                ("Executive Assistant to the CEO", False, False), ("Chief of Staff", False, False), ("Associate Director", False, False)]:
-        assert (senior_enough(title, False), senior_enough(title, True)) == (small, large), title
+    for title, kept in [("CEO", True), ("Co-Founder & CTO", True), ("VP Engineering", True), ("Managing Director", True), ("Director of Operations", True), ("Head of Support", True),
+                        ("Product Manager", False), ("Executive Assistant to the CEO", False), ("Chief of Staff", False), ("Associate Director", False), ("", False)]:
+        assert senior_enough(title) == kept, title
     run_id = "88888888-8888-8888-8888-888888888888"
     people = [("ceo@acme.com", "Sam", "CEO"), ("dir@acme.com", "Dee", "Director of Operations"), ("pm@acme.com", "Pat", "Product Manager")]
     monkeypatch.setenv("HUNTER_API_KEY", "h")
     fake_http(monkeypatch, lambda m, url, b: httpx.Response(200, json={"data": {"emails": [{"value": e, "first_name": n, "last_name": "X", "position": t, "verification": {"status": "valid"}} for e, n, t in people] if "job_titles" in url else []}}))
-    for employees, expected in [("51-200", ["Sam X"]), ("8,053", ["Sam X", "Dee X"])]:
+    for employees, expected in [("51-200", ["Sam X", "Dee X"]), ("8,053", ["Sam X", "Dee X"])]:
         write(tmp_path / f"{run_id}.json", {"run": {"run_id": run_id}, "companies": [{"id": "c1", "domain": "acme.com", "people": [], "review": {"decision": None}, "buyer_titles": ["CEO"], "buyer_departments": [],
                                                                                  "financials": {"employees": {"value": employees}}}]})
         company = run(review_company({"run_id": run_id, "company_id": "c1", "decision": "accepted"}, tmp_path))

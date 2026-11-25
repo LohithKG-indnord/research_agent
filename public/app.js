@@ -164,7 +164,7 @@ const decided = (decision, what) => `<span class="badge ${decision}">${decision 
 
 function decisionBar(c) {
   const decision = c.review?.decision;
-  const hint = config.people.length ? `Accepting looks up to ${config.max_people} decision makers (C-level, founders, VPs; directors too at 1,000+ staff)` : 'Accept the company to look up leads';
+  const hint = config.people.length ? `Accepting looks up to ${config.max_people} people at Director level and above` : 'Accept the company to look up leads';
   return `<div class="review">
     ${decision ? `${decided(decision, 'Company')}<button type="button" class="switch" data-decision="${decision === 'accepted' ? 'rejected' : 'accepted'}">${decision === 'accepted' ? 'Reject instead' : 'Accept instead'}</button>`
     : `<button type="button" data-decision="accepted">Accept</button><button type="button" data-decision="rejected">Reject</button>`}
@@ -184,11 +184,11 @@ function leadsPanel(c) {
       : `<button type="button" class="lead" data-person="${esc(p.id)}" data-lead="accept">Accept</button> <button type="button" class="lead" data-person="${esc(p.id)}" data-lead="reject">Reject</button>`} <b>${esc(p.name)}</b> ${esc(p.title)} ${p.email ? `<a href="mailto:${encodeURIComponent(p.email)}">${esc(p.email)}</a>` : '<span class="mini">no email</span>'} <span class="pill ${p.status === 'verified' ? 'verified' : 'inferred'}">${esc(p.status)}</span>${p.profile_url ? ` <a href="${profileUrl(p)}" target="_blank" rel="noreferrer">${/linkedin\.com/i.test(p.profile_url) ? 'LinkedIn' : 'profile'}</a>` : ` <a href="${linkedinSearch(p, c)}" target="_blank" rel="noreferrer">find on LinkedIn</a>`} <span class="mini">${esc(p.source)}${p.from_run ? ' · from an earlier run' : isNew(p) ? '' : ' · earlier lookup'}</span>${p.saved ? ' <span class="mini">· message in the Messages tab</span>' : ''}</li>`).join('');
   return `<div class="review">
     ${c.people_error ? `<p class="mini warn">Lead lookup failed: ${esc(c.people_error)}</p>` : ''}
-    ${decision === 'accepted' ? `<label>Job titles <span>comma-separated; empty uses the buyer titles for your product. Only decision makers are kept: C-level, founders, VPs, and directors at companies with 1,000+ staff.</span><input class="titles" placeholder="${esc((c.buyer_titles || []).join(', ') || 'e.g. Chief Operating Officer, CTO, VP Operations')}"/></label>
+    ${decision === 'accepted' ? `<label>Job titles <span>comma-separated; empty uses the buyer titles for your product. Only Director level and above is kept: C-level, founders, VPs, directors and heads.</span><input class="titles" placeholder="${esc((c.buyer_titles || []).join(', ') || 'e.g. Chief Operating Officer, CTO, VP Operations')}"/></label>
       <div>${config.people.map(p => `<button type="button" data-provider="${esc(p)}">Find ${c.people.length ? 'more ' : ''}leads with ${esc(p[0].toUpperCase() + p.slice(1))} (up to ${config.max_people} new people)</button>`).join(' ') || '<p class="mini">Add HUNTER_API_KEY or APOLLO_API_KEY to .env and restart to look up leads.</p>'}</div>
       ${c.people.length ? `<h4>Leads (${c.people.length}, ${c.people.filter(p => p.saved).length} accepted)</h4>
         <label class="inline">Show <select class="show"><option value="all">All leads, including earlier ones (${c.people.length})</option><option value="new"${all ? '' : ' selected'}>New leads from the last lookup (${c.people.filter(isNew).length})</option></select></label>
-        <p class="mini">Each lookup returns only people you haven't seen before. Only accepted leads go into the database and the accepted leads export.${c.people_lookups?.at(-1)?.not_senior ? ` The last lookup skipped ${c.people_lookups.at(-1).not_senior} people below decision-maker level.` : ''}</p>
+        <p class="mini">Each lookup returns only people you haven't seen before. Only accepted leads go into the database and the accepted leads export.${c.people_lookups?.at(-1)?.not_senior ? ` The last lookup skipped ${c.people_lookups.at(-1).not_senior} people below Director level.` : ''}</p>
         ${people ? `<ul>${people}</ul>` : '<p class="mini">The last lookup found no new people. Try other job titles, or show all leads.</p>'}` : c.people_lookups?.length ? '<p class="mini">No leads found yet. Try other job titles.</p>' : ''}` : ''}
   </div>`;
 }
@@ -374,11 +374,11 @@ function report(r) {
     </section>`;
   }).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><title>Account research report</title><style>
-    body{font:14px/1.55 Arial,sans-serif;color:#17241e;max-width:820px;margin:32px auto;padding:0 16px}
-    h1{font-size:24px;margin:0}h2{font-size:19px;margin:0 0 4px}h3{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#205c49;margin:16px 0 6px}
-    .muted{color:#63716b;font-size:12px}.score{font-size:13px;background:#eef1e6;border-radius:12px;padding:2px 10px;margin-left:6px}
-    section{border-top:2px solid #205c49;padding-top:14px;margin-top:26px;break-inside:auto}table{border-collapse:collapse}td{padding:3px 14px 3px 0;vertical-align:top}
-    ul{margin:4px 0;padding-left:20px}.two{display:grid;grid-template-columns:1fr 1fr;gap:20px}.lead{border:1px solid #d9ddd3;border-radius:8px;padding:8px 12px;margin:8px 0}.pre{white-space:pre-wrap}
+    body{font:14px/1.55 'Plus Jakarta Sans',Arial,sans-serif;color:#252A34;max-width:820px;margin:32px auto;padding:0 16px}
+    h1{font-size:24px;margin:0}h2{font-size:19px;margin:0 0 4px}h3{font-size:13px;font-weight:600;color:#B83B39;margin:16px 0 6px}
+    .muted{color:#64748B;font-size:12px}.score{font-size:13px;background:#F1F0EF;border-radius:12px;padding:2px 10px;margin-left:6px}
+    section{border-top:2px solid #E15451;padding-top:14px;margin-top:26px;break-inside:auto}table{border-collapse:collapse}td{padding:3px 14px 3px 0;vertical-align:top}
+    ul{margin:4px 0;padding-left:20px}.two{display:grid;grid-template-columns:1fr 1fr;gap:20px}.lead{border:1px solid #EEECEB;border-radius:12px;padding:8px 12px;margin:8px 0}.pre{white-space:pre-wrap}
     @media print{body{margin:0}section{break-before:page}section:first-of-type{break-before:auto}}
   </style></head><body><h1>Account research report</h1>
   <p class="muted">${esc(r.campaign?.title || '')} · ${esc(new Date(r.campaign?.generated_at || Date.now()).toLocaleString())} · ${r.companies.length} compan${r.companies.length === 1 ? 'y' : 'ies'}</p>
