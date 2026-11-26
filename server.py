@@ -11,7 +11,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from agent.capacity import buying_capacity
@@ -20,8 +20,11 @@ from agent.db import sync_db
 from agent.discover import find_companies
 from agent.export import xlsx
 from agent.profile import company_profile, profile_docx
-from agent.people import MAX_PEOPLE, apply_notes, case_study, growth_plan, enrich_company, mark_outreach, people_providers, review_company, rewrite_message, save_lead
+from agent.people import _lock as lead_lock
+from agent.people import MAX_PEOPLE, apply_notes, case_study, forget, growth_plan, enrich_company, mark_outreach, people_providers, review_company, rewrite_message, save_lead
 from agent.pipeline import LEADS_DIR, run_agent
+from agent.privacy import retention_days, sweep
+from agent.roles import buying_roles
 from agent.rerank import warmup
 from agent.util import to_json
 
@@ -40,7 +43,22 @@ async def lifespan(_app):
     print(f"Database leads/leads.db: {synced} runs in sync")
     print(f"Account Fit Agent running at http://localhost:{PORT}", flush=True)
     warmup()  # download/load the reranker in the background
+    cleaner = asyncio.create_task(retention_loop())
     yield
+    cleaner.cancel()
+
+
+async def retention_loop():
+    """GDPR storage limitation: delete leads past RETENTION_DAYS now and once a day while the server runs."""
+    while True:
+        try:
+            async with lead_lock():  # never at the same time as a click that edits the same files
+                removed = await asyncio.to_thread(sweep, LEADS_DIR)
+            if removed:
+                print(f"Retention: deleted {removed} lead(s) older than {retention_days()} days", flush=True)
+        except Exception as e:  # noqa: BLE001 - a failed sweep is retried tomorrow; it must not stop the server
+            print(f"Retention sweep failed: {e}", flush=True)
+        await asyncio.sleep(86_400)
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -111,7 +129,7 @@ async def read_json(request, limit=50_000):
     return (body if isinstance(body, dict) else {}), None
 
 
-ACTIONS = {"/api/review": review_company, "/api/people": enrich_company, "/api/save-lead": save_lead, "/api/message": rewrite_message, "/api/outreach": mark_outreach, "/api/notes": apply_notes, "/api/case-study": case_study, "/api/growth": growth_plan, "/api/discover": find_companies, "/api/chat": chat, "/api/chat/companies": chat_companies}
+ACTIONS = {"/api/review": review_company, "/api/people": enrich_company, "/api/save-lead": save_lead, "/api/message": rewrite_message, "/api/outreach": mark_outreach, "/api/notes": apply_notes, "/api/case-study": case_study, "/api/growth": growth_plan, "/api/discover": find_companies, "/api/chat": chat, "/api/chat/companies": chat_companies, "/api/forget": forget, "/api/buying-roles": buying_roles}
 
 
 @app.post("/api/review")
@@ -125,6 +143,8 @@ ACTIONS = {"/api/review": review_company, "/api/people": enrich_company, "/api/s
 @app.post("/api/discover")
 @app.post("/api/chat")
 @app.post("/api/chat/companies")
+@app.post("/api/forget")
+@app.post("/api/buying-roles")
 async def action(request: Request):
     body, error = await read_json(request)
     if error:

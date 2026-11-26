@@ -1,5 +1,5 @@
 """Named-company lead research (design doc section 4.2): for each company the user names,
-identify it -> research it (DonSeTch / Exa search + its own site) -> pick the most relevant
+identify it -> research it (Exa search + its own site) -> pick the most relevant
 passages with a local reranker -> LLM scores fit and willingness to buy -> verify every quote."""
 import asyncio
 import base64
@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from .capacity import buying_capacity
 from .db import try_save, with_job
 from .llm import ask_json, model
+from .registry import legal_entity, owners
 from .rerank import rerank
 from .util import jround, now_iso, to_json
 from .web import domain_of, fetch_page, fetchable, map_limit, same_site, search
@@ -83,7 +84,7 @@ async def identify(inp, entry):
     )
     rows = _unique_by_url([r for f in found for r in f["rows"]])
     if not rows and not page:
-        raise RuntimeError("No search results from Exa or DonSeTch, and no readable website. Add the company's domain or try again.")
+        raise RuntimeError("No search results (is EXA_API_KEY set?) and no readable website. Add the company's domain or try again.")
     homepage = f"Homepage text:\n{page['title']}\n{page['text'][:1500]}\n" if page else ""
     results = "\n".join(f"[{i}] {r['title']} | {r['url']} | {r['date'][:10]} | {r['snippet'][:220]}" for i, r in enumerate(rows)) or "(none)"
     got = await ask_json(
@@ -156,8 +157,8 @@ async def gather_pages(ident):
         pages.append({**p, "type": "company_site" if same_site(domain_of(p["url"]), ident["domain"]) else "third_party"})
     # Financial figures: the snippet often holds the number even when the page can't be read, so keep both.
     year = int(now_iso()[:4])
-    money = await _gather(search(f"{ident['name']} annual revenue net profit FY{year} FY{year - 1} latest results", 6, ident["name"], True),
-                          search(f"{ident['name']} total funding raised number of employees", 6, ident["name"], True))
+    money = await _gather(search(f"{ident['name']} annual revenue net profit FY{year} FY{year - 1} latest results", 6, ident["name"]),
+                          search(f"{ident['name']} total funding raised number of employees", 6, ident["name"]))
     rows = _unique_by_url([r for m in money for r in m["rows"]])[:8]
     read = await map_limit(rows, 4, lambda r: _none() if any(p["url"] == r["url"] for p in pages) else fetch_page(r["url"], 8000))
     for r, got in zip(rows, read):
@@ -637,6 +638,7 @@ async def run_agent(raw, emit=lambda event: None):
             log("identifying and searching the web…")
             ident = await identify(inp, entry)
             log(f"identified as {ident['name']} ({ident['domain'] or 'no domain'}, {ident['identity_confidence']} confidence); {len(ident['leads'])} research links via {ident['search']['provider']}")
+            registry = asyncio.create_task(legal_entity(ident["name"], ident.get("region") or ""))  # runs while pages are read
             gathered = await gather_pages(ident)
             pages = gathered["pages"]
             if not pages:
@@ -655,6 +657,8 @@ async def run_agent(raw, emit=lambda event: None):
             }
             s = score_company(q, sel["sources"], ident["domain"], ident["identity_confidence"])
             home = gathered["home"]
+            entity = await registry
+            related = list(dict.fromkeys([*q["related_companies"], *owners(entity)]))  # registered owners join the "own group" list
             company = {
                 "id": str(uuid.uuid4()), "input_name": entry["name"], "name": ident["name"], "domain": ident["domain"], "website": home["url"] if home else (f"https://{ident['domain']}" if ident["domain"] else None),
                 "identity_confidence": ident["identity_confidence"], "alternatives": ident.get("alternatives") or [], "industry": q["industry"], "size_band": q["size_band"], "location": q["location"],
@@ -665,7 +669,7 @@ async def run_agent(raw, emit=lambda event: None):
                 "summary": q["summary"], "verdict": q["verdict"], "pitch_angle": q["pitch_angle"], "fit_reasons": q["fit_reasons"], "objections": q["objections"],
                 "buying_signals": [{**b, "url": next((x["url"] for x in sel["sources"] if x["id"] == b["source_id"]), None)} for b in q["buying_signals"]],
                 "buyer_titles": q["buyer_titles"], "buyer_departments": [d for d in q["buyer_departments"] if d in DEPARTMENTS][:2], "evidence": s["evidence"], "unknowns": q["unknowns"],
-                "business_type": ident.get("business_type") or "", "region": ident.get("region") or "", "related_companies": q["related_companies"],
+                "business_type": ident.get("business_type") or "", "region": ident.get("region") or "", "related_companies": related, "legal_entity": entity,
                 "financials": (fins := check_financials(q["financials"], sel["sources"], ident["name"])), "buying_capacity": buying_capacity(fins, q["willingness_to_buy"] if q["willingness_to_buy"] in ("high", "medium", "low") else "low"), "pages_read": pages_read, "usage": usage, "people": [],
                 "review": {"decision": None, "reason": None, "decided_by": None, "decided_at": None},
             }
@@ -729,8 +733,8 @@ async def find_case_study(company, icp):
     topic = icp.get("category") or " ".join(str(icp.get("product") or "").split()[:8]) or "new technology"
     found = await _gather(
         # Ranking pages ("top wealth management firms in India 2026") list same-work firms with revenue figures.
-        search(f"how a {field} company grew revenue: case study of what they implemented, strategy and technology", 8, "", True),
-        search(f"{field} companies that adopted {topic}: case study, revenue growth, results", 8, "", True),
+        search(f"how a {field} company grew revenue: case study of what they implemented, strategy and technology", 8, ""),
+        search(f"{field} companies that adopted {topic}: case study, revenue growth, results", 8, ""),
         search(f"fastest growing {field} {region}: how they grew revenue, what they changed".replace("  ", " "), 8))
     rows = _unique_by_url([r for m in found for r in m["rows"] if not LOOKALIKE_SITES.search(domain_of(r["url"])) and not same_site(domain_of(r["url"]), company.get("domain"))])
     read = await map_limit(rows[:6], 4, lambda r: fetch_page(r["url"], 10000))

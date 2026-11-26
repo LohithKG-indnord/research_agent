@@ -159,6 +159,10 @@ const caseStudy = cs => `<div class="case">
   <p class="mini">“${esc(cs.quote)}” <a href="${safeUrl(cs.url)}" target="_blank" rel="noreferrer">${esc(host(cs.url))} ↗</a></p>
 </div>`;
 
+// The company's group and related companies, minus the company itself (its registered name is added for the case-study filter).
+const plainName = s => String(s || '').toLowerCase().replace(/\(.*?\)/g, ' ').replace(/\b(private|pvt|limited|ltd|inc|llc|llp|corp|corporation|company|co)\b/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
+const groupOf = c => [...new Set(c.related_companies || [])].filter(n => plainName(n) && ![c.name, c.legal_entity?.legal_name].some(x => plainName(x) === plainName(n)));
+
 // A decision shows as a badge; the one button left switches it.
 const decided = (decision, what) => `<span class="badge ${decision}">${decision === 'accepted' ? '✓' : '✕'} ${what} ${decision}</span>`;
 
@@ -172,16 +176,26 @@ function decisionBar(c) {
   </div>`;
 }
 
+const leadsView = {}; // company id -> "list" or "roles"
+
 function leadsPanel(c) {
   const decision = c.review?.decision;
   if (decision !== 'accepted') return `<p class="mini">Accept the company to look up leads.</p>`;
+  const view = c.people.length ? leadsView[c.id] || 'list' : 'list';
+  const views = c.people.length ? `<div class="subtabs" role="tablist">${[['list', `Leads (${c.people.length})`], ['roles', 'Buying roles']].map(([v, label]) => `<button type="button" role="tab" data-leads-view="${v}" aria-selected="${view === v}">${label}</button>`).join('')}</div>` : '';
+  if (view === 'roles') return `<div class="review">${views}${rolesPanel(c)}</div>`;
+  return views + leadsList(c);
+}
+
+function leadsList(c) {
+  const decision = c.review?.decision;
   const latest = Math.max(0, ...c.people.map(p => p.batch ?? 1), ...(c.people_lookups || []).map(l => l.batch ?? 1));
   const isNew = p => (p.batch ?? 1) === latest;
   const all = showAll[c.id] ?? true;
   const shown = all ? c.people : c.people.filter(isNew);
   const people = shown.map(p => `<li data-lead-id="${esc(p.id)}" class="${p.saved === false ? 'dropped' : ''}">${typeof p.saved === 'boolean'
       ? `${decided(p.saved ? 'accepted' : 'rejected', '')} <button type="button" class="lead switch" data-person="${esc(p.id)}" data-lead="${p.saved ? 'reject' : 'accept'}">${p.saved ? 'Reject' : 'Accept'}</button>`
-      : `<button type="button" class="lead" data-person="${esc(p.id)}" data-lead="accept">Accept</button> <button type="button" class="lead" data-person="${esc(p.id)}" data-lead="reject">Reject</button>`} <b>${esc(p.name)}</b> ${esc(p.title)} ${p.email ? `<a href="mailto:${encodeURIComponent(p.email)}">${esc(p.email)}</a>` : '<span class="mini">no email</span>'} <span class="pill ${p.status === 'verified' ? 'verified' : 'inferred'}">${esc(p.status)}</span>${p.profile_url ? ` <a href="${profileUrl(p)}" target="_blank" rel="noreferrer">${/linkedin\.com/i.test(p.profile_url) ? 'LinkedIn' : 'profile'}</a>` : ` <a href="${linkedinSearch(p, c)}" target="_blank" rel="noreferrer">find on LinkedIn</a>`} <span class="mini">${esc(p.source)}${p.from_run ? ' · from an earlier run' : isNew(p) ? '' : ' · earlier lookup'}</span>${p.saved ? ' <span class="mini">· message in the Messages tab</span>' : ''}</li>`).join('');
+      : `<button type="button" class="lead" data-person="${esc(p.id)}" data-lead="accept">Accept</button> <button type="button" class="lead" data-person="${esc(p.id)}" data-lead="reject">Reject</button>`} <b>${esc(p.name)}</b> ${esc(p.title)} ${p.email ? `<a href="mailto:${encodeURIComponent(p.email)}">${esc(p.email)}</a>` : '<span class="mini">no email</span>'} <span class="pill ${p.status === 'verified' ? 'verified' : 'inferred'}">${esc(p.status)}</span>${p.profile_url ? ` <a href="${profileUrl(p)}" target="_blank" rel="noreferrer">${/linkedin\.com/i.test(p.profile_url) ? 'LinkedIn' : 'profile'}</a>` : ` <a href="${linkedinSearch(p, c)}" target="_blank" rel="noreferrer">find on LinkedIn</a>`} <span class="mini">${esc(p.source)}${p.from_run ? ' · from an earlier run' : isNew(p) ? '' : ' · earlier lookup'}</span>${p.saved ? ' <span class="mini">· message in the Messages tab</span>' : ''} <button type="button" class="link-button" data-forget="${esc(p.id)}" title="Erase this person from every run and the database, and never look them up again">Delete &amp; don't contact</button></li>`).join('');
   return `<div class="review">
     ${c.people_error ? `<p class="mini warn">Lead lookup failed: ${esc(c.people_error)}</p>` : ''}
     ${decision === 'accepted' ? `<label>Job titles <span>comma-separated; empty uses the buyer titles for your product. Only Director level and above is kept: C-level, founders, VPs, directors and heads.</span><input class="titles" placeholder="${esc((c.buyer_titles || []).join(', ') || 'e.g. Chief Operating Officer, CTO, VP Operations')}"/></label>
@@ -208,9 +222,18 @@ $('#cards').addEventListener('click', async e => {
     tabs[card.dataset.id] = tab.dataset.tab;
     card.querySelectorAll('[data-tab]').forEach(t => t.setAttribute('aria-selected', t === tab));
     card.querySelectorAll('[data-panel]').forEach(p => { p.hidden = p.dataset.panel !== tab.dataset.tab; });
-    if (['growth', 'recommend'].includes(tab.dataset.tab)) writeGrowth(card.dataset.id); // written the first time it's opened
+    return; // opening a tab never calls Claude: paid steps start from their own button
+  }
+  const view = e.target.closest('[data-leads-view]');
+  if (view) { // Leads list or Buying roles, inside the Leads tab
+    leadsView[view.closest('.card').dataset.id] = view.dataset.leadsView;
+    renderCards(lastResult.companies);
     return;
   }
+  const start = e.target.closest('[data-growth-start]');
+  if (start) return writeGrowth(start.closest('.card').dataset.id);
+  const reclassify = e.target.closest('[data-classify]');
+  if (reclassify) return classifyRoles(reclassify.closest('.card').dataset.id, true);
   const again = e.target.closest('[data-growth]');
   if (again) return writeGrowth(again.closest('.card').dataset.id, true);
   const alt = e.target.closest('[data-alt]');
@@ -221,6 +244,8 @@ $('#cards').addEventListener('click', async e => {
     $('#run-form').scrollIntoView({ behavior: 'smooth' });
     return;
   }
+  const erase = e.target.closest('[data-forget]');
+  if (erase) return forgetLead(erase);
   const button = e.target.closest('[data-decision], [data-provider], [data-person], [data-rewrite], [data-outreach], [data-notes], [data-case]');
   if (!button) return;
   const box = button.closest('.card'), say = box.querySelector('[role=status]'), run = lastResult;
@@ -229,7 +254,7 @@ $('#cards').addEventListener('click', async e => {
   // A button pressed again clears the status.
   const status = outreach && button.getAttribute('aria-pressed') !== 'true' ? outreach : null;
   box.querySelectorAll('button').forEach(b => { b.disabled = true; });
-  say.textContent = caseRun ? 'Searching for a case study…' : notes ? 'Updating the results with your notes…' : rewrite ? 'Rewriting the message…' : person ? (button.dataset.lead === 'accept' ? 'Saving and writing a message…' : 'Saving…') : decision === 'accepted' ? (config.people.length ? 'Writing the growth plan and looking up leads…' : 'Writing the growth plan…') : provider ? 'Looking up leads…' : 'Saving…';
+  say.textContent = caseRun ? 'Searching for a case study…' : notes ? 'Updating the results with your notes…' : rewrite ? 'Rewriting the message…' : person ? (button.dataset.lead === 'accept' ? 'Saving and writing a message…' : 'Saving…') : decision === 'accepted' && config.people.length ? 'Looking up leads…' : provider ? 'Looking up leads…' : 'Saving…';
   try {
     const url = caseRun ? '/api/case-study' : notes ? '/api/notes' : rewrite ? '/api/message' : outreach ? '/api/outreach' : person ? '/api/save-lead' : provider ? '/api/people' : '/api/review';
     const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ run_id: run.run.run_id, company_id: box.dataset.id, decision, provider, person_id: personId, saved: person ? button.dataset.lead === 'accept' : undefined, titles: box.querySelector('.titles')?.value, feedback: li?.querySelector('.msg-feedback')?.value, status, notes: notes ? box.querySelector('.notes').value : undefined }) });
@@ -244,12 +269,95 @@ $('#cards').addEventListener('click', async e => {
   }
 });
 
+// GDPR erasure + objection: the first click asks, the second deletes the person everywhere and blocks future lookups.
+async function forgetLead(button) {
+  if (!button.dataset.armed) {
+    button.dataset.armed = '1';
+    button.textContent = 'Click again to delete everywhere (cannot be undone)';
+    button.classList.add('danger');
+    setTimeout(() => { if (button.isConnected) { delete button.dataset.armed; button.textContent = "Delete & don't contact"; button.classList.remove('danger'); } }, 6000);
+    return;
+  }
+  const run = lastResult, box = button.closest('.card'), say = box.querySelector('[role=status]');
+  button.disabled = true; button.textContent = 'Deleting…';
+  try {
+    const data = await postJson('/api/forget', { run_id: run.run.run_id, company_id: box.dataset.id, person_id: button.dataset.forget });
+    run.companies[run.companies.findIndex(c => c.id === data.id)] = data;
+    tabs[data.id] = 'leads';
+    if (lastResult === run) renderCards(run.companies);
+  } catch (err) {
+    say.textContent = err.message;
+    button.disabled = false;
+  }
+}
+
+// A paid step waiting for the user: what it gives, a clear button, and what it costs.
+const cta = (title, what, label, attr, cost) => `<div class="cta"><div><b>${esc(title)}</b><p>${esc(what)}</p></div><button type="button" ${attr}>${esc(label)} <b>→</b></button><p class="mini">${esc(cost)}</p></div>`;
+
+// ---------- Buying roles: role-based inference of each lead's place in the buying committee ----------
+const ROLE_ORDER = ['Initiator', 'Influencer', 'Champion', 'Decision Maker', 'Economic Buyer', 'Buyer / Procurement', 'Gatekeeper', 'End User'];
+// Who usually plays each role, by buying motion: shown for roles no lead fills yet.
+const ROLE_TITLES = {
+  'IT Software': ['Business user, IT Head, Functional Head', 'Enterprise Architect, IT Security, Functional Expert', 'Department Head, Product Owner, IT Director', 'CIO, CTO, CDO, Functional Head', 'CIO, CFO, Business Head', 'IT Procurement, Software Procurement', 'IT Governance, Security, Vendor Management', 'Employees, Functional Teams, IT Users'],
+  'IT Services': ['Engineering Head, CIO, Business Unit Head', 'CTO, Architects, Engineering Directors, Delivery Heads', 'GCC Head, VP Engineering, Transformation Head', 'CIO, CTO, GCC Head, VP Engineering', 'CIO, CTO, Business Unit Head, CFO', 'IT Procurement, Strategic Sourcing, Vendor Management', 'Procurement, Vendor Management, PMO', 'Engineering Teams, Operations Teams, Business Teams'],
+};
+const engagement = p => p.saved === false ? 'Rejected' : p.outreach?.status === 'sent' ? 'Contacted' : p.outreach?.status === 'skipped' ? 'Skipped' : 'Not contacted';
+const pendingRoles = new Map(); // company id -> when classifying started
+
+function rolesPanel(c) {
+  const bc = c.buying_committee, people = c.people || [];
+  if (pendingRoles.has(c.id)) return `<div class="loading" role="status"><span class="spinner" aria-hidden="true"></span><div><b>Classifying buying roles…</b><p class="mini">Usually 15–40 seconds · about $0.02–0.03 · <span data-elapsed="${pendingRoles.get(c.id)}">0s</span></p></div></div>`;
+  if (c.roles_error) return `<p class="mini warn">Couldn't classify: ${esc(c.roles_error)}</p><p><button type="button" class="alt-button" data-classify>Try again</button></p>`;
+  if (!bc) return cta('Buying roles', `Classify ${people.length === 1 ? 'this lead' : `these ${people.length} leads`} by their likely role in the buying decision (Initiator, Champion, Decision Maker, Economic Buyer…) and map the buying committee.`, 'Classify buying roles', 'data-classify', 'One Claude call · about $0.02–0.03');
+  const roleOf = p => bc.people[p.id];
+  const unclassified = people.filter(p => !roleOf(p)).length;
+  const titles = ROLE_TITLES[bc.buying_motion] || ROLE_TITLES['IT Services'];
+  const map = ROLE_ORDER.map((role, i) => {
+    const primary = people.filter(p => roleOf(p)?.primary_role === role), secondary = people.filter(p => roleOf(p)?.secondary_role === role);
+    const who = [...primary.map(p => `<b>${esc(p.name)}</b>`), ...secondary.map(p => `${esc(p.name)} <span class="mini">(secondary)</span>`)].join(', ');
+    return `<tr><th>${role}</th><td>${who || `<span class="mini">Not found yet · look for: ${esc(titles[i])}</span>`}</td></tr>`;
+  }).join('');
+  // One row per person; the reason shows when hovering the name.
+  const row = p => {
+    const r = roleOf(p);
+    if (!r) return '';
+    return `<tr><th title="${esc(r.why)}">${esc(p.name)}<span class="mini">${esc(p.title || '')}</span>${r.entry_point ? '<span class="pill entry">entry point</span>' : ''}</th>
+      <td>${esc(r.primary_role)}${r.secondary_role ? `<span class="mini">${esc(r.secondary_role)}</span>` : ''}</td>
+      <td><span class="pill conf-${esc(r.confidence)}">${esc(r.confidence)}</span></td>
+      <td>${esc(r.decision_authority)}</td><td>${esc(r.technical_influence)}</td><td>${esc(r.budget_ownership)}</td><td>${esc(r.business_interest)}</td><td>${engagement(p)}</td></tr>`;
+  };
+  return `<div class="roles">
+    <p><b>Buying motion:</b> ${esc(bc.buying_motion)}${bc.category ? ` · ${esc(bc.category)}` : ''} <span class="mini">${esc(bc.why_motion)}</span></p>
+    <p class="mini">Starting hypotheses from each lead's title and public company information, not confirmed buying roles: confirm them in conversation. High confidence needs public mentions of the person; only Director-level and above leads are looked up, so roles like architects, procurement and end users often show as not found.</p>
+    <h4>Buying committee map</h4><table class="committee">${map}</table>
+    <h4>People</h4><div class="table-scroll"><table class="people-roles"><thead><tr><th>Person</th><th>Role <span class="mini">primary / secondary</span></th><th>Confidence</th><th>Decision authority</th><th>Technical influence</th><th>Budget ownership</th><th>Business interest</th><th>Engagement</th></tr></thead>
+      <tbody>${[...people].sort((a, b) => (roleOf(b)?.score ?? -1) - (roleOf(a)?.score ?? -1)).map(row).join('')}</tbody></table></div>
+    <p class="mini">${unclassified ? `${unclassified} lead${unclassified === 1 ? '' : 's'} not classified yet. ` : ''}<button type="button" class="alt-button" data-classify>${unclassified ? 'Classify new leads' : 'Classify again'}</button> about $0.02–0.03 · classified ${esc(new Date(bc.classified_at).toLocaleDateString())}</p>
+  </div>`;
+}
+
+async function classifyRoles(id, again = false) {
+  const run = lastResult, i = run?.companies.findIndex(x => x.id === id), c = run?.companies[i];
+  if (!c?.people?.length || pendingRoles.has(id)) return;
+  const unclassified = c.people.some(p => !c.buying_committee?.people?.[p.id]);
+  if (!again && ((c.buying_committee && !unclassified) || c.roles_error)) return;
+  pendingRoles.set(id, Date.now()); delete c.roles_error; renderCards(run.companies);
+  try {
+    const data = await postJson('/api/buying-roles', { run_id: run.run.run_id, company_id: id, again });
+    run.companies[run.companies.findIndex(x => x.id === id)] = data;
+  } catch (err) { c.roles_error = err.message; }
+  pendingRoles.delete(id);
+  if (lastResult === run) renderCards(run.companies);
+}
+
 // The growth plan and recommendation are written on demand (one Claude call, about $0.02), so companies nobody pursues never pay for them.
-const pendingGrowth = new Set();
+const pendingGrowth = new Map(); // company id -> when writing started
+// While a plan is being written, its loader counts the seconds so the user can see it's still working.
+setInterval(() => document.querySelectorAll('[data-elapsed]').forEach(s => { s.textContent = `${Math.round((Date.now() - Number(s.dataset.elapsed)) / 1000)}s`; }), 1000);
 async function writeGrowth(id, again = false) {
   const run = lastResult, i = run?.companies.findIndex(x => x.id === id), c = run?.companies[i];
   if (!c || pendingGrowth.has(id) || (!again && (c.growth_written || c.growth_play || c.growth_business?.length || c.growth_error))) return;
-  pendingGrowth.add(id); delete c.growth_error; renderCards(run.companies);
+  pendingGrowth.set(id, Date.now()); delete c.growth_error; renderCards(run.companies);
   try {
     const res = await fetch('/api/growth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ run_id: run.run.run_id, company_id: id, again }) });
     const data = await res.json();
@@ -268,7 +376,8 @@ function renderCards(companies) {
     const hasGrowth = c.growth_play || c.growth_business?.length || c.path_to_win?.length;
     const growth = lastResult || hasGrowth; // during a run there's nothing to write it from yet
     const growthWait = c.growth_error ? `<p class="mini warn">Couldn't write the growth plan: ${esc(c.growth_error)}</p><p><button type="button" class="alt-button" data-growth>Try again</button></p>`
-      : `<p class="mini">${pendingGrowth.has(c.id) ? 'Writing the growth plan and recommendation… (about $0.02)' : 'Open this tab to write the growth plan and recommendation (about $0.02).'}</p>`;
+      : pendingGrowth.has(c.id) ? `<div class="loading" role="status"><span class="spinner" aria-hidden="true"></span><div><b>Writing the growth plan and recommendation…</b><p class="mini">Usually 20–60 seconds · about $0.02 · <span data-elapsed="${pendingGrowth.get(c.id)}">0s</span></p></div></div>`
+      : cta('Growth plan & recommendation', 'Business and technical ways this company could grow, and how your product helps it get there.', 'Write growth plan', 'data-growth-start', 'One Claude call · about $0.02 · writes both tabs');
     const shown = ['overview', 'financials', ...(growth ? ['growth', 'recommend'] : []), ...(lastResult ? ['notes', 'leads', 'messages'] : []), 'evidence']; // no leads tab while a run is in progress
     const tab = shown.includes(tabs[c.id]) ? tabs[c.id] : 'overview';
     const tabButton = (id, label) => `<button type="button" role="tab" data-tab="${id}" aria-selected="${tab === id}">${label}</button>`;
@@ -283,12 +392,12 @@ function renderCards(companies) {
           ${c.reused_from ? `<p class="mini">Reused research from ${esc(new Date(c.reused_from.at).toLocaleDateString())} · no cost · <button type="button" class="alt" data-alt="${esc(c.domain ? `${c.input_name}, ${c.domain}` : c.input_name)}" data-fresh>Research again</button></p>` : ''}</div>
       </header>
       <p class="summary">${esc(c.summary)}</p>
+      ${c.legal_entity ? `<p class="mini">Registered as ${esc(c.legal_entity.legal_name)} (${esc(c.legal_entity.country || '')})${c.legal_entity.ultimate_parent || c.legal_entity.parent ? ` · owned by ${esc(c.legal_entity.ultimate_parent || c.legal_entity.parent)}` : ''} · <a href="https://search.gleif.org/#/record/${encodeURIComponent(c.legal_entity.lei)}" target="_blank" rel="noreferrer">official LEI register ↗</a></p>` : ''}
       <div class="verdict wtb-${esc(c.willingness_to_buy)}"><b>Willingness to buy: ${esc(c.willingness_to_buy)}</b>${c.user_notes ? ' <span class="pill">updated with your notes</span>' : ''}<p>${esc(clean(c.verdict))}</p>${c.pitch_angle ? `<p><b>Pitch angle:</b> ${esc(clean(c.pitch_angle))}</p>` : ''}</div>
       ${lastResult ? decisionBar(c) : ''}
       <div class="tabs" role="tablist">
         ${tabButton('overview', 'Fit & signals')}${tabButton('financials', 'Financials')}${growth ? tabButton('growth', 'Growth plan') + tabButton('recommend', 'Recommendation') : ''}${lastResult ? tabButton('notes', c.user_notes ? 'Your notes ✓' : 'Your notes') : ''}
-        ${lastResult ? tabButton('leads', `Leads${c.people.length ? ` (${c.people.length})` : ''}`) : ''}
-        ${lastResult && c.people.some(p => p.saved) ? tabButton('messages', `Messages (${c.people.filter(p => p.saved).length})`) : ''}
+        ${lastResult ? tabButton('leads', `Leads${c.people.length ? ` (${c.people.length})` : ''}`) : ''}        ${lastResult && c.people.some(p => p.saved) ? tabButton('messages', `Messages (${c.people.filter(p => p.saved).length})`) : ''}
         ${tabButton('evidence', `Evidence (${verified})`)}
       </div>
       ${panel('overview', `<div class="cols">
@@ -297,6 +406,7 @@ function renderCards(companies) {
           <h4>Why they'd buy</h4>${list(c.fit_reasons)}
           <h4>Why they might not</h4>${list(c.objections)}</div>
         <div><h4>Buying signals</h4>${c.buying_signals.length ? `<ul>${c.buying_signals.map(b => `<li>${esc(clean(b.signal))}${b.date && !/unknown/i.test(b.date) ? ` <em>(${esc(b.date)})</em>` : ''}${b.url ? ` <a href="${safeUrl(b.url)}" target="_blank" rel="noreferrer">${esc(host(b.url))}</a>` : ''}</li>`).join('')}</ul>` : '<p class="mini">None found.</p>'}
+          ${groupOf(c).length ? `<h4>Group &amp; related companies</h4>${list(groupOf(c))}<p class="mini">Owners, parents, subsidiaries, sister companies and investors with a stake, as the sources name them. Never used as the case study.</p>` : ''}
           <h4>Who to approach</h4>${list(c.buyer_titles?.length ? c.buyer_titles : c.buying_functions)}</div>
       </div>
       <p class="mini">Read ${c.pages_read} pages · ${c.usage.input_tokens + c.usage.output_tokens} tokens${c.usage.usd === null ? '' : ` ($${c.usage.usd})`} · search: ${esc(c.usage.search_provider)} · ${c.meets_min_evidence ? 'meets minimum evidence' : 'below minimum evidence — verify before outreach'}</p>`)}
@@ -367,6 +477,7 @@ function report(r) {
       ${c.growth_business?.length ? `<div class="two"><div><h3>Business growth</h3>${li(c.growth_business)}</div><div><h3>Technical growth</h3>${li(c.growth_technical)}</div></div>` : ''}
       ${c.growth_play ? `<h3>Recommendation: how our product helps them grow</h3><p>${esc(clean(c.growth_play))}</p>${li((c.product_solutions || []).map(x => `${x.growth_point} → ${x.how_product_helps}`).concat(c.product_extras || []).concat(c.growth_levers || []))}` : ''}
       ${c.case_study ? `<h3>Case study: ${esc(c.case_study.name)}</h3><p><b>${esc(c.case_study.growth)}</b></p><p>${esc(clean(c.case_study.what_they_did))}</p>${c.case_study.implemented?.length ? `<p><b>What they implemented:</b></p>${li(c.case_study.implemented)}` : ''}<p><b>How our product gets this company there:</b></p>${li(c.case_study.how_product_helps)}<p class="muted">“${esc(c.case_study.quote)}” · ${esc(c.case_study.url)}</p>` : ''}
+      ${groupOf(c).length ? `<p><b>Group &amp; related companies:</b> ${groupOf(c).map(esc).join(' · ')}</p>` : ''}
       <div class="two"><div><h3>Why they'd buy</h3>${li(c.fit_reasons)}</div><div><h3>Why they might not</h3>${li(c.objections)}</div></div>
       ${c.path_to_win?.length ? `<h3>How to win them</h3>${li(c.path_to_win)}` : ''}
       ${leads.length ? `<h3>Accepted leads</h3>${leads.map(p => `<div class="lead"><b>${esc(p.name)}</b>, ${esc(p.title || '')}${p.email ? ` · ${esc(p.email)}` : ''}${p.profile_url ? ` · ${esc(p.profile_url)}` : ''}

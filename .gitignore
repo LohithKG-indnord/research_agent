@@ -4,5 +4,4 @@ leads/
 models/
 __pycache__/
 .pytest_cache/
-legacy_js/node_modules/
 .claude/settings.local.json

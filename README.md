@@ -11,7 +11,7 @@ Every claim is backed by a quote from a page the agent read. New here? Read [HAN
 
 ## Run
 
-You need Python 3.12+. For free web search, also install DonSeTch: `npm install -g donsetch`.
+You need Python 3.12+, an Anthropic API key and an Exa API key (web search).
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -49,7 +49,7 @@ python -m pytest -q
 
 ### Find companies (ICP) tab
 
-Describe your ideal customer, for example "SaaS companies in Bengaluru with 50–500 staff", and the agent suggests 5 real companies with a reason for each. It uses two free searches, one Exa company search and one Claude call, about $0.02–0.03. Companies already suggested are excluded when you ask for more.
+Describe your ideal customer, for example "SaaS companies in Bengaluru with 50–500 staff", and the agent suggests 5 real companies with a reason for each. It uses three Exa searches (two for list pages, one limited to company websites) and one Claude call, about $0.05–0.07. Companies already suggested are excluded when you ask for more.
 
 From the suggestions you can:
 
@@ -63,7 +63,7 @@ Each researched company gets a card with these tabs, in order:
 
 1. **Fit & signals:** score and tier, willingness to buy, Accept/Reject, fit reasons, objections, buying signals, pitch angle and recommended next steps.
 2. **Financials:** revenue, growth and profit. A figure is shown only when its number is on the source page (including table rows whose unit sits in the header); otherwise it says "Unknown". Newest year first; growth is calculated from two years when both are found. A **buying capacity** estimate follows: tech budget about 3–7% of revenue, new-offering budget about 10–20% of that, adjusted by willingness to buy.
-3. **Growth plan:** business and technical ways the company could grow, independent of your product. Written when you first open the tab.
+3. **Growth plan:** business and technical ways the company could grow, independent of your product. Written when you click **Write growth plan** (about $0.02, fills this tab and Recommendation). Opening a tab or accepting a company never calls Claude on its own.
 4. **Recommendation:** how your product addresses those points, other ways it can help, and the path to win. Also includes the **case study** button: one similar, independent company that grew, its revenue figures and what it implemented. Group companies and lookalike lists are excluded. If no proven case is found, nothing is shown.
 5. **Your notes:** add facts the web couldn't verify. The agent then re-scores the company and rewrites the plan.
 6. **Leads:** Director level and above only (see Leads below), each with Accept/Reject.
@@ -77,20 +77,38 @@ Each researched company gets a card with these tabs, in order:
 The **Ask about a company** button opens a side panel. Search for one of your researched companies, then ask questions, such as how they could grow or whether your product fits. Answers come from the saved research and cite their sources.
 
 - It uses Claude Haiku 5.5 (`claude-haiku-5-5`), about $0.001 per answer.
-- "Search the web too" adds free DonSeTch results.
+- "Search the web too" adds one Exa search and reads the top two pages, about $0.007 more per answer.
 - The last 6 exchanges are sent as context, and chats are saved with the company.
 
 ## How research works (per company, 3 in parallel)
 
 1. **Search and identify.** Three searches: the official website, news and funding, and topics tied to your product. Claude reads only the result list, confirms the company and its domain, and picks pages. Claude never browses.
-2. **Read.** The agent fetches the home, about, careers, products, news and customers pages plus the picked pages. Two financial searches (revenue/profit for the latest years, funding/employees) always use DonSeTch and Exa.
+2. **Read.** The agent fetches the home, about, careers, products, news and customers pages plus the picked pages. Two more searches look for revenue/profit for the latest years and for funding/employees.
 3. **Rerank.** A local cross-encoder (bge-reranker-base, ONNX) keeps the 18 passages most relevant to your product, plus up to 8 financial passages.
 4. **Score.** Claude scores the company from those passages only and must quote them word for word.
 5. **Verify.** Quotes that don't match the fetched text are marked inferred and don't count. A dimension with no verified quote is capped at 35, and financial figures must appear on their page.
 
 Score weights (`WEIGHTS` in `agent/pipeline.py`): has the problem 30, profile fit 20, timing 20, buyer visible 15, evidence quality 15. Tiers: Priority ≥75, Qualified ≥60, Nurture ≥40. No company is dropped; low scorers get a growth plan to show how they could become buyers.
 
-**Search.** DonSeTch (free) runs first. Exa (paid, about $0.007 per search) is added only when DonSeTch finds too little, and always for the financial and case-study searches.
+**Search.** All web search goes through Exa's official API (its own index, licensed for automated use, about $0.007 per search). The agent never scrapes a search engine. Without `EXA_API_KEY` there is no search, and a company is researched only from a website you give.
+
+**Official register (GLEIF).** While pages are read, the agent looks the company up in GLEIF, the official global register of Legal Entity Identifiers (open data, free, no key). The lookup has three effects:
+
+- When it finds the company, the card shows the registered legal name and country, the owner when the register records one, and a link to the record.
+- The registered name and owners are added to the "own group" list, so the case study never picks the company's own group.
+- A match must be unambiguous: the brand plus a legal suffix, or plus one word such as "Technologies"; an entity in the company's own country wins.
+  - A business line ("PayU Finance"), a subsidiary ("Swiggy Instamart") or a tie it can't break gives no match, rather than a wrong one.
+
+The lookup is capped at 10 seconds. If the register is slow or down, research carries on without it.
+
+**Reading websites.** The agent reads public pages the way a well-behaved crawler does:
+
+- It names itself honestly (`AccountFitAgent/1.0`, plus `CRAWLER_CONTACT` from `.env`) and never pretends to be a browser.
+- It obeys each site's `robots.txt` (RFC 9309): pages a site disallows are never requested. A site whose `robots.txt` returns a server error is not read at all. A missing `robots.txt` means no rules. Rules are cached for up to 24 hours.
+- It waits at least 1 second between requests to the same site, or longer if the site's `Crawl-delay` asks. A site asking for more than 10 seconds is skipped.
+- A "429 slow down" reply is not retried.
+- One page gets at most 25 seconds, retries included, so a stalled site can't hold up the run.
+- A page it may not read is scored from its search snippet instead.
 
 **Claude.**
 
@@ -103,7 +121,7 @@ Score weights (`WEIGHTS` in `agent/pipeline.py`): has the problem 30, profile fi
 
 | Item | Cost |
 |---|---|
-| Research, per company | About $0.06–0.07 (2 Claude calls + a few Exa searches) |
+| Research, per company | About $0.08–0.09 (2 Claude calls + 5 Exa searches) |
 | Reading your website or document | About $0.01 once per run |
 | Growth plan, case study, notes re-score | A few cents each, only when used |
 
@@ -113,9 +131,9 @@ Each result records tokens, searches and cost under `usage`.
 
 - Page fetches skip LinkedIn, other social networks and private network addresses, on every redirect.
 - Page and document content is treated as data, never as instructions.
-- `robots.txt` is not checked.
+- Only public pages are read; nothing behind a login, and `robots.txt` is obeyed (see Reading websites).
 - The server only accepts requests from this computer.
-- DonSeTch is AGPL-3.0 and sends each query to public search endpoints without a key (Google's search widget, Keenable, Exa's and Parallel's public MCP servers), mostly US services with no data processing agreement. Review its licence and their terms before production use.
+- Search queries (company names and short topics, no personal data) go to Exa, a US service. Sign Exa's data processing agreement and check its terms before production use.
 
 ## Leads
 
@@ -143,7 +161,40 @@ Accepting a company looks up its buyers with the first provider that has a key: 
 - LinkedIn links are copied, never opened.
 - Nothing is sent.
 
-There is no delete screen yet. To erase a person, remove them from the JSON files in `leads/` and from `leads.db`: the `people` row and any `provider_responses` payload that names them. Check the provider terms and the privacy law that applies before contacting people.
+**Buying roles** (a switch inside the Leads tab). **Classify buying roles** sorts the company's leads by role-based inference. It is one Claude call, about $0.02–0.03, and runs only when clicked. The result is a table with one row per lead, showing:
+
+- **Roles:** a primary and a secondary buying role out of eight: Initiator, Influencer, Champion, Decision Maker, Economic Buyer, Buyer / Procurement, Gatekeeper, End User.
+- **Confidence:** low, medium or high.
+- **CRM fields:** decision authority, technical influence, budget ownership, business interest, engagement status.
+- **Likely entry point**, marked on the person most likely to own the problem.
+
+Hovering a name shows the one-line reason. Rows are ordered by an authority / influence score out of 100: budget ownership 25, decision authority 25, functional ownership 20, technical/business influence 20, internal advocacy 10, each scored 0–4. The score is stored but not shown. The view also shows the buying motion (IT Software or IT Services) and a buying committee map, with the titles to look for in roles no lead fills yet.
+
+These are starting hypotheses, not confirmed roles. They use only the lead's title and the company research, with no LinkedIn reading and no extra searching about the person. **High confidence** requires at least two verified quotes in the research that name the person, and the code enforces that. Leads are looked up at Director level and above, so architects, procurement staff and end users often appear as "not found". Deleting a lead also deletes their classification.
+
+**GDPR safeguards (`agent/privacy.py`):**
+
+- **Privacy notice (Article 14).** Every outreach email and LinkedIn follow-up ends with a line saying:
+  - where the person's work details came from (Hunter.io or Apollo.io);
+  - that they can reply "no" to opt out;
+  - your privacy policy link (`PRIVACY_POLICY_URL`).
+
+  The line is added in code, never by Claude, so it can't be left out or reworded. Messages written before this existed get it at the next server start. Until `PRIVACY_POLICY_URL` is set, the line shows a reminder in place of the link. LinkedIn connection notes have no room (300 characters), so the follow-up carries the notice.
+- **Delete & don't contact (Articles 17 and 21).** Each lead has a "Delete & don't contact" button; it asks twice. It erases the person from:
+  - every saved run (`leads/*.json`, any case of email);
+  - the database, including their sources;
+  - any raw Hunter/Apollo reply that names them.
+
+  It then adds them to `leads/suppressed.json`. That file holds only one-way hashes of their email and of name + company, so it can block them without storing who they are, and no later lookup adds them back.
+- **Retention (Article 5).** Leads are deleted `RETENTION_DAYS` (default 365, minimum 30) after they were found. A contacted lead is deleted that long after the contact. Raw Hunter/Apollo replies older than that go too. The cleanup runs when the server starts and then daily.
+
+Still needed from your side:
+- a documented lawful basis (usually a legitimate interest assessment);
+- the privacy policy the link points to;
+- a decision on the retention period;
+- checking the provider terms.
+
+Someone qualified should confirm these.
 
 ## Storage and database
 
@@ -175,5 +226,3 @@ FROM leads l JOIN companies c ON c.id = l.company_id JOIN company_rankings r ON 
 LEFT JOIN company_people cp ON cp.company_id = c.id LEFT JOIN people p ON p.id = cp.person_id
 WHERE l.status = 'accepted';
 ```
-
-The earlier Node.js version is kept, unused, in `legacy_js/`. It can be deleted.

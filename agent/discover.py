@@ -1,5 +1,5 @@
 """Find companies to research from an ideal-customer description ("SaaS companies in Bengaluru with 50-500 staff").
-Free DonSeTch searches find list pages ("top SaaS companies in Bengaluru"), one Exa search limited to company websites finds
+Two web searches find list pages ("top SaaS companies in Bengaluru"), one Exa search limited to company websites finds
 the companies themselves, and one Claude call picks the 5 best matches. Every pick must be named in what was found."""
 import os
 import re
@@ -17,7 +17,7 @@ async def _exa_companies(icp):
         return {"rows": [], "cost": 0}
     try:
         return await exa_search(icp, 20, category="company")
-    except Exception:  # noqa: BLE001 - the free searches still answer
+    except Exception:  # noqa: BLE001 - the list searches still answer
         return {"rows": [], "cost": 0}
 
 
@@ -31,7 +31,7 @@ async def find_companies(body):
     exclude = [str(x) for x in body.get("exclude") or []][:50]
     lists = await _gather(search(f"{icp} list of companies", 8), search(f"top {icp}", 8), _exa_companies(icp))
     rows = _unique_by_url([r for found in lists for r in found["rows"]])[:30]
-    # The best list pages name far more companies than their snippet shows: read the top three (free).
+    # The best list pages name far more companies than their snippet shows: read the top three.
     read = await map_limit([r for r in rows if r in lists[0]["rows"][:2] + lists[1]["rows"][:1]], 3, lambda r: fetch_page(r["url"], 6000))
     full = {p["url"]: p["text"] for p in read if p}
     sources = [{"id": f"S{i + 1}", "url": r["url"], "title": r["title"], "text": f"{r['snippet']} {full.get(r['url'], '')}".strip()} for i, r in enumerate(rows)]

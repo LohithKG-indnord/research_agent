@@ -183,3 +183,37 @@ table.solve{border-collapse:collapse;width:100%;margin:0 0 18px;font-size:14px}t
 @media (max-width:640px){.panel,.card{padding:20px}}
 @media (max-width:520px){.chat{top:0;right:0;bottom:0;width:100vw;border-radius:0;border:0}.chat-fab{right:16px;bottom:16px}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* Delete & do-not-contact on a lead: quiet until armed */
+button.link-button{background:none;border:0;padding:0 4px;color:var(--muted);font-size:12px;text-decoration:underline;cursor:pointer;width:auto}
+button.link-button.danger{background:var(--action);color:#fff;border-radius:6px;padding:2px 8px;text-decoration:none}
+/* Loader while the growth plan is written */
+.loading{margin:0 0 18px;display:flex;gap:14px;align-items:center;padding:18px;border:1px solid var(--line,#EEECEB);border-radius:14px;background:var(--canvas)}
+.loading .mini{margin:4px 0 0}
+.spinner{flex:none;width:26px;height:26px;border-radius:50%;border:3px solid var(--line,#E6E3E1);border-top-color:var(--action);animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spinner{animation-duration:2.4s}}
+/* Buying roles tab */
+.roles h4{margin:18px 0 8px}
+.committee{width:100%;border-collapse:collapse;font-size:14px}.committee th{width:170px;text-align:left;font-weight:600;padding:7px 10px 7px 0;vertical-align:top;color:var(--ink)}.committee td{padding:7px 0}.committee tr+tr{border-top:1px solid var(--line)}
+.pill.role{background:var(--ink);color:var(--surface)}.pill.entry{background:var(--success-soft);color:var(--ink)}
+.pill.conf-high{background:var(--success-soft);color:var(--ink)}.pill.conf-medium{background:var(--surface-2);color:var(--ink)}.pill.conf-low{background:var(--coral-50);color:var(--accent)}
+@media (max-width:640px){.committee th{width:auto;display:block;padding-bottom:0}.committee td{display:block}}
+/* Leads | Buying roles switch inside the Leads tab */
+.subtabs{display:inline-flex;width:fit-content;justify-self:start;grid-column:1/-1;gap:4px;padding:4px;margin:0 0 14px;background:var(--surface-2);border-radius:999px}
+.subtabs button{background:none;border:0;color:var(--muted);font-weight:600;padding:6px 14px;border-radius:999px;width:auto}
+.subtabs button[aria-selected=true]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+/* Buying roles: people table */
+.table-scroll{overflow-x:auto;margin:0 0 12px}
+.people-roles{width:100%;border-collapse:collapse;font-size:13px;min-width:720px}
+.people-roles th,.people-roles td{text-align:left;padding:8px 10px 8px 0;vertical-align:top;text-transform:capitalize}
+.people-roles thead th{font-size:12px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--line-strong)}
+.people-roles tbody tr+tr{border-top:1px solid var(--line)}
+.people-roles tbody th{font-weight:600;text-transform:none;cursor:help}
+.people-roles .mini{display:block;margin:2px 0 0;text-transform:none}
+.people-roles .pill.entry{display:inline-block;margin-top:4px}
+/* A paid step waiting for the user to start it */
+.cta{display:grid;grid-template-columns:1fr auto;gap:6px 18px;align-items:center;padding:18px 20px;margin:0 0 18px;border:1px dashed var(--line-strong);border-radius:14px;background:var(--canvas)}
+.cta p{margin:4px 0 0;font-size:14px;color:var(--subtle)}
+.cta button,.review .cta button{white-space:nowrap;background:var(--action);color:#fff;border:0}
+.cta .mini{grid-column:1/-1;margin:0}
+@media (max-width:640px){.cta{grid-template-columns:1fr}.cta button{justify-self:start}}

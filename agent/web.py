@@ -1,19 +1,25 @@
-"""Web access: search providers and page fetching."""
+"""Web access: search (Exa's official API) and polite page reading (honest name, robots.txt obeyed, paced per site)."""
 import asyncio
 import ipaddress
-import json
-import math
 import os
 import re
-import subprocess
 import sys
+import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.robotparser import RobotFileParser
 
 import httpx
 
 from .db import recorded
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+BOT = "AccountFitAgent"
+# An honest name, never a browser disguise, so site owners can see who reads them and can block us in robots.txt.
+UA = f"{BOT}/1.0 (+{os.environ.get('CRAWLER_CONTACT') or 'company research; obeys robots.txt'})"
+MIN_GAP = 1.0        # seconds between two requests to the same site
+MAX_DELAY = 10       # a robots.txt Crawl-delay above this: the site is skipped rather than read slowly
+ROBOTS_TTL = 86_400  # RFC 9309: a cached robots.txt is used for at most 24 hours
+_robots = {}         # origin -> (time read, RobotFileParser, or None meaning "read nothing here")
+_next = {}           # host -> earliest time of the next request to it
 
 
 def warn(message):
@@ -86,8 +92,40 @@ def is_private(ip):
     return any(addr in net for net in PRIVATE_NETS if net.version == addr.version)
 
 
-async def safe_fetch(url, headers=None, timeout=20):
-    """Follow redirects by hand so every hop passes the host rules, not only the first URL."""
+async def _load_robots(origin):
+    """RFC 9309: a 4xx (including no robots.txt) means no rules; a 5xx, 429 or unreachable server means read nothing."""
+    try:
+        hit = await safe_fetch(f"{origin}/robots.txt", headers={"User-Agent": UA}, timeout=10)
+    except Exception:  # noqa: BLE001 - unreachable
+        return None
+    rules = RobotFileParser()
+    if hit and (hit[0].status_code == 429 or hit[0].status_code >= 500):
+        return None
+    rules.parse(hit[0].content.decode("utf-8", "replace")[:500_000].splitlines() if hit and hit[0].is_success else [])
+    return rules
+
+
+async def robots_for(url):
+    p = urlsplit(url)
+    origin = f"{p.scheme}://{p.netloc}".lower()
+    cached = _robots.get(origin)
+    if not cached or time.monotonic() - cached[0] > ROBOTS_TTL:
+        cached = _robots[origin] = (time.monotonic(), await _load_robots(origin))
+    return cached[1]
+
+
+async def pace(host, delay):
+    """Wait until this site's next free slot, so requests to one site are at least `delay` seconds apart."""
+    now = time.monotonic()
+    at = max(now, _next.get(host, 0))
+    _next[host] = at + max(MIN_GAP, delay)
+    if at > now:
+        await asyncio.sleep(at - now)
+
+
+async def safe_fetch(url, headers=None, timeout=20, polite=False):
+    """Follow redirects by hand so every hop passes the host rules, not only the first URL.
+    polite: every hop must also be allowed by its site's robots.txt, and is paced per site (page reads use this)."""
     for _ in range(6):
         # shortcut: the request resolves DNS again after this check; pin the IP if the agent runs inside a sensitive network.
         if not fetchable(url):
@@ -95,6 +133,12 @@ async def safe_fetch(url, headers=None, timeout=20):
         infos = await asyncio.get_running_loop().getaddrinfo(urlsplit(url).hostname, None)
         if any(is_private(info[4][0]) for info in infos):
             return None
+        if polite:
+            rules = await robots_for(url)
+            delay = float((rules.crawl_delay(BOT) or 0) if rules else 0)
+            if not rules or not rules.can_fetch(BOT, url) or delay > MAX_DELAY:
+                return None
+            await pace(_host(url), delay)
         res = await http("GET", url, headers=headers, timeout=timeout)
         location = res.headers.get("location") if 300 <= res.status_code < 400 else None
         if not location:
@@ -123,70 +167,49 @@ async def exa_search(query, max_results, category=None):
     }
 
 
-def donsetch_bin():
-    """The npm shim is a .cmd that can't be run directly, so call the binary itself (no shell: queries hold user text)."""
-    return os.environ.get("DONSETCH_BINARY") or os.path.join(os.environ.get("APPDATA", ""), "npm/node_modules/donsetch/binaries/donsetch.exe")
-
-
-async def donsetch_search(query, max_results):
-    def run():
-        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        out = subprocess.run([donsetch_bin(), "search", "--json", "--quiet", "--max-results", str(max_results), "--", query], capture_output=True, timeout=45, check=True, creationflags=flags)
-        return json.loads(out.stdout.decode("utf-8", "replace"))
-    data = await recorded("donsetch", "search", {"query": query, "max": max_results}, lambda: asyncio.to_thread(run), lambda raw: {"cost": 0})
-    return {"rows": [{"title": r.get("title") or "", "url": r.get("url"), "snippet": r.get("snippet") or "", "date": ""} for r in data["meta"]["results"]], "cost": 0}
-
-
-engines = {"exa": exa_search, "donsetch": donsetch_search}  # a dict so tests can replace them
-
-
 def _plain(s):
     return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
 
 
-async def search(query, max_results=8, about="", also_exa=False):
-    """DonSeTch (free) first. Exa (paid) runs only when DonSeTch fails or finds fewer than half `max_results` results that
-    mention `about` (the company); the two are then merged, results about the company first.
-    `also_exa`: always add Exa, listed first (its longer page extracts often hold figures, e.g. revenue, that DonSeTch's snippets miss)."""
+async def search(query, max_results=8, about=""):
+    """Web search through Exa's official, keyed API (its own index, licensed for automated use; no search engine is
+    scraped). Results that mention `about` (the company) come first. No key or an Exa error -> no rows; callers handle that."""
+    if not os.environ.get("EXA_API_KEY"):
+        warn("Web search is off: set EXA_API_KEY in .env")
+        return {"rows": [], "provider": "none", "cost": 0}
+    try:
+        got = await exa_search(query, max_results)
+    except Exception as error:  # noqa: BLE001 - one failed search must not stop the run
+        warn(f"exa search failed: {str(error)[:200]}")
+        return {"rows": [], "provider": "none", "cost": 0}
     name = re.sub(r" (inc|llc|ltd|corp|corporation|company|pvt|private|limited)$", "", _plain(about))
+    rows = [r for r in got["rows"] if fetchable(r["url"])]
+    rows = sorted(rows, key=lambda r: bool(name) and name not in _plain(f"{r['title']} {r['snippet']} {r['url']}"))[:max_results]
+    return {"rows": rows, "provider": "exa" if rows else "none", "cost": got["cost"]}
 
-    def relevant(r):
-        return not name or name in _plain(f"{r['title']} {r['snippet']} {r['url']}")
 
-    async def try_engine(provider):
-        try:
-            got = await engines[provider](query, max_results)
-            return {"rows": [r for r in got["rows"] if fetchable(r["url"])], "cost": got["cost"]}
-        except Exception as error:  # noqa: BLE001 - one engine failing must not stop the search
-            warn(f"{provider} search failed: {str(error)[:200]}")
-            return {"rows": [], "cost": 0}
-
-    use_exa = also_exa and bool(os.environ.get("EXA_API_KEY"))
-    free, early = await asyncio.gather(try_engine("donsetch"), try_engine("exa") if use_exa else asyncio.sleep(0, None))
-    if not use_exa and (len([r for r in free["rows"] if relevant(r)]) >= math.ceil(max_results / 2) or not os.environ.get("EXA_API_KEY")):
-        return {"rows": free["rows"][:max_results], "provider": "donsetch" if free["rows"] else "none", "cost": 0}
-    paid = early or await try_engine("exa")
-    merged = {}
-    for r in (paid["rows"] + free["rows"]) if use_exa else (free["rows"] + paid["rows"]):
-        merged[r["url"]] = r  # like a JavaScript Map: a repeat keeps its first place but takes the later row
-    unique = list(merged.values())
-    rows = ([r for r in unique if relevant(r)] + [r for r in unique if not relevant(r)])[:max_results]
-    used = "+".join(p for p, got in (("donsetch", free), ("exa", paid)) if got["rows"])
-    return {"rows": rows, "provider": used or "none", "cost": paid["cost"]}
+PAGE_DEADLINE = 25  # seconds for one page, retries included: one stalled site must not hold up a whole run
 
 
 async def fetch_page(url, max_chars=6000):
     """Fetch a page and reduce it to readable text plus title, description and same-site links."""
     if not fetchable(url):
         return None
-    for attempt in (1, 2, 3):
-        page = await fetch_once(url, max_chars)
-        if page != "retry":
-            return page
-        if attempt < 3:
-            await asyncio.sleep(1.5 * attempt)
-    warn(f"fetch failed after retries: {url}")
-    return None
+
+    async def attempts():
+        for attempt in (1, 2, 3):
+            page = await fetch_once(url, max_chars)
+            if page != "retry":
+                return page
+            if attempt < 3:
+                await asyncio.sleep(1.5 * attempt)
+        warn(f"fetch failed after retries: {url}")
+        return None
+    try:
+        return await asyncio.wait_for(attempts(), PAGE_DEADLINE)
+    except TimeoutError:
+        warn(f"fetch gave up after {PAGE_DEADLINE}s: {url}")
+        return None
 
 
 def _href(url):
@@ -196,13 +219,13 @@ def _href(url):
 
 
 async def fetch_once(url, max_chars):
-    """Returns a page, None (permanent: 4xx / not HTML) or "retry" (timeout, network error, 429, 5xx)."""
+    """Returns a page, None (permanent: robots.txt says no, 4xx, 429 "slow down", not HTML) or "retry" (timeout, network error, 5xx)."""
     try:
-        hit = await safe_fetch(url, headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9"}, timeout=20)
+        hit = await safe_fetch(url, headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9"}, timeout=20, polite=True)
         if not hit:
             return None
         res, final_url = hit
-        if res.status_code == 429 or res.status_code >= 500:
+        if res.status_code >= 500:
             return "retry"
         if not res.is_success or not re.search(r"text/html|xhtml", res.headers.get("content-type", ""), re.I):
             return None

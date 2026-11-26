@@ -1,6 +1,6 @@
 """The chat assistant: pick a researched company, then ask follow-up questions about it. Answers come from the saved
 research (no pages re-read), on the small model with that research cached, so a question costs about a tenth of a cent
-to a cent. "Search the web too" adds a free DonSeTch search; Exa is never used here."""
+to a cent. "Search the web too" adds one Exa search (about $0.007) and reads the top two pages."""
 import json
 import re
 from pathlib import Path
@@ -47,19 +47,16 @@ async def chat_companies(body, directory=LEADS_DIR):
     return {"companies": out}
 
 
-async def _free_web(company, question):
-    """DonSeTch only (free), plus the top two pages read in full (free). Nothing found -> nothing added."""
-    try:
-        found = await web.engines["donsetch"](f"{company.get('name')} {question}"[:300], 6)
-    except Exception:  # noqa: BLE001 - the answer still comes from the research
-        return "", []
-    rows = [r for r in found["rows"] if web.fetchable(r["url"])][:5]
+async def _web(company, question):
+    """One search plus the top two pages read in full. Nothing found -> nothing added; the answer still comes from the research."""
+    found = await web.search(f"{company.get('name')} {question}"[:300], 5, company.get("name") or "")
+    rows, cost = found["rows"], found["cost"] or 0
     pages = await web.map_limit(rows[:2], 2, lambda r: web.fetch_page(r["url"], 4000))
     full = {p["url"]: p["text"] for p in pages if p}
     if not rows:
-        return "", []
+        return "", [], cost
     text = "\n\n".join(f"[W{i + 1}] {r['url']} | {r['title']}\n{r['snippet']} {full.get(r['url'], '')}".strip() for i, r in enumerate(rows))
-    return f"\n\nFresh web results for this question (cite as their URL):\n{text}", [r["url"] for r in rows]
+    return f"\n\nFresh web results for this question (cite as their URL):\n{text}", [r["url"] for r in rows], cost
 
 
 async def chat(body, directory=LEADS_DIR):
@@ -78,13 +75,13 @@ async def chat(body, directory=LEADS_DIR):
         context = (f"Seller's product: {icp.get('product') or 'not specified'}\nSeller's ideal customer: {icp.get('criteria') or 'not specified'}\n\n"
                    f"Research on {company.get('name')} ({company.get('domain') or 'no domain'}), from {(result.get('campaign') or {}).get('generated_at', '')[:10]}:\n"
                    f"{to_json({k: v for k, v in facts.items() if v not in (None, '', [], {})}, indent=1)}")
-        extra, sources = await _free_web(company, question) if body.get("web") else ("", [])
+        extra, sources, search_usd = await _web(company, question) if body.get("web") else ("", [], 0)
         earlier = (company.get("chat") or [])[-HISTORY * 2:]
         messages = [{"role": m["role"], "content": m["text"]} for m in earlier] + [{"role": "user", "content": question + extra}]
         got = await ask_text(SYSTEM, context, messages)
         at = now_iso()
         company["chat"] = [*(company.get("chat") or []), {"role": "user", "text": question, "at": at, "web": bool(body.get("web"))},
-                           {"role": "assistant", "text": got["text"], "at": at, "usd": got["usage"]["usd"], "sources": sources}][-KEEP:]
+                           {"role": "assistant", "text": got["text"], "at": at, "usd": got["usage"]["usd"] + search_usd, "sources": sources}][-KEEP:]
     company = await change(directory, body.get("run_id"), body.get("company_id"), fn)
     return {"name": company.get("name"), "fit_score": company.get("fit_score"), "tier": company.get("tier"),
             "willingness_to_buy": company.get("willingness_to_buy"), "chat": company.get("chat") or []}

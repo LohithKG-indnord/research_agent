@@ -1,4 +1,4 @@
-"""The same checks the JavaScript test.mjs ran, ported one for one. No test makes a real network or Claude call."""
+"""Offline checks of the agent. No test makes a real network or Claude call."""
 import asyncio
 import json
 import re
@@ -22,7 +22,9 @@ def run(coro):
 def clean_env(monkeypatch):
     for key in ("EXA_API_KEY", "HUNTER_API_KEY", "APOLLO_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_API_KEY"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("DONSETCH_BINARY", "does-not-exist")
+    monkeypatch.setattr(web, "_robots", {})
+    monkeypatch.setattr(web, "_next", {})
+    monkeypatch.setattr(web, "MIN_GAP", 0)
 
 
 def fake_http(monkeypatch, handler):
@@ -87,37 +89,69 @@ def test_a_redirect_to_a_private_or_social_host_is_not_followed(monkeypatch):
     assert is_private("::1") and is_private("::ffff:10.0.0.1") and not is_private("8.8.8.8")
 
 
-def test_donsetch_runs_first_and_exa_is_paid_only_when_donsetch_finds_too_little(monkeypatch):
-    monkeypatch.setenv("EXA_API_KEY", "test")
+def test_search_uses_exas_official_api_and_puts_results_about_the_company_first(monkeypatch):
     status = {"code": 200}
-    exa_calls = fake_http(monkeypatch, lambda m, url, b: httpx.Response(status["code"], json={"results": [
+    calls = fake_http(monkeypatch, lambda m, url, b: httpx.Response(status["code"], json={"results": [
+        {"title": "Other", "url": "https://o.com", "highlights": ["x"]},
         {"title": "Acme A", "url": "https://a.com/x", "highlights": ["one", "two"], "publishedDate": "2026-01-02"}, {"title": "L", "url": "https://linkedin.com/x"},
     ], "costDollars": {"total": 0.007}}))
-    # DonSeTch broken: Exa's results are mapped and used.
-    assert run(search("q")) == {"rows": [{"title": "Acme A", "url": "https://a.com/x", "snippet": "one two", "date": "2026-01-02"}], "provider": "exa", "cost": 0.007}
+    # No key: no search at all, nothing scraped instead.
+    assert run(search("q")) == {"rows": [], "provider": "none", "cost": 0} and calls == []
+    monkeypatch.setenv("EXA_API_KEY", "test")
+    r = run(search("q", 8, "Acme Inc"))
+    assert calls == ["https://api.exa.ai/search"] and r["provider"] == "exa" and r["cost"] == 0.007
+    # social sites dropped, results naming the company first
+    assert r["rows"] == [{"title": "Acme A", "url": "https://a.com/x", "snippet": "one two", "date": "2026-01-02"}, {"title": "Other", "url": "https://o.com", "snippet": "x", "date": ""}]
     status["code"] = 402
     assert run(search("q"))["provider"] == "none"
-    status["code"] = 200
 
-    def row(title, url):
-        return {"title": title, "url": url, "snippet": "", "date": ""}
 
-    async def donsetch(query, most):
-        return {"rows": [row("Acme news", "https://n.com/1"), row("About Acme Inc", "https://acme.com"), row("Other", "https://o.com")], "cost": 0}
-    monkeypatch.setitem(web.engines, "donsetch", donsetch)
-    before = len(exa_calls)
-    # Enough DonSeTch results about Acme: Exa is not called.
-    assert run(search("q", 4, "Acme Inc")) == {"rows": [row("Acme news", "https://n.com/1"), row("About Acme Inc", "https://acme.com"), row("Other", "https://o.com")], "provider": "donsetch", "cost": 0}
-    assert len(exa_calls) == before
-    # Too little about Acme: Exa tops up, results about Acme first, duplicates dropped.
-    r = run(search("q", 8, "Acme"))
-    assert r["provider"] == "donsetch+exa"
-    assert r["cost"] == 0.007
-    assert [x["url"] for x in r["rows"]] == ["https://n.com/1", "https://acme.com", "https://a.com/x", "https://o.com"]
-    # Financial searches always add Exa, its results first, even when DonSeTch is enough.
-    money = run(search("q", 4, "Acme Inc", True))
-    assert money["provider"] == "donsetch+exa"
-    assert [x["url"] for x in money["rows"]] == ["https://a.com/x", "https://n.com/1", "https://acme.com", "https://o.com"]
+def test_pages_are_read_politely_with_an_honest_name_and_robots_txt_obeyed(monkeypatch):
+    robots = {"code": 200, "text": "User-agent: *\nDisallow: /private\n"}
+    agents = []
+
+    def handler(method, url, body):
+        if url.endswith("/robots.txt"):
+            return httpx.Response(robots["code"], text=robots["text"])
+        return httpx.Response(200, headers={"content-type": "text/html"}, text="<title>Acme</title><p>Hello</p>")
+    calls = fake_http(monkeypatch, handler)
+    real_http = web.http
+
+    async def spy(method, url, *, headers=None, **kw):
+        agents.append((headers or {}).get("User-Agent", ""))
+        return await real_http(method, url, headers=headers, **kw)
+    monkeypatch.setattr(web, "http", spy)
+    assert run(web.fetch_page("https://1.1.1.1/about"))["title"] == "Acme"
+    assert all(a.startswith("AccountFitAgent/") and "Mozilla" not in a for a in agents)  # no browser disguise
+    # A blocked page is never requested, and robots.txt is read once and cached.
+    assert run(web.fetch_page("https://1.1.1.1/private/x")) is None
+    assert calls == ["https://1.1.1.1/robots.txt", "https://1.1.1.1/about"]
+    # Rules that name our bot are obeyed too.
+    robots["text"] = "User-agent: AccountFitAgent\nDisallow: /no-bots\n"
+    monkeypatch.setattr(web, "_robots", {})
+    assert run(web.fetch_page("https://1.1.1.1/no-bots")) is None
+    # No robots.txt (404) means no rules; a server error on robots.txt means read nothing (RFC 9309).
+    robots["code"] = 404
+    monkeypatch.setattr(web, "_robots", {})
+    assert run(web.fetch_page("https://1.1.1.1/private/x"))["title"] == "Acme"
+    robots["code"] = 503
+    monkeypatch.setattr(web, "_robots", {})
+    assert run(web.fetch_page("https://1.1.1.1/about")) is None
+    # A Crawl-delay too long to honour: the site is skipped rather than read faster than it asks.
+    robots.update(code=200, text="User-agent: *\nCrawl-delay: 60\n")
+    monkeypatch.setattr(web, "_robots", {})
+    assert run(web.fetch_page("https://1.1.1.1/about")) is None
+    # A stalled site gives up at the page deadline instead of holding the run for minutes.
+    robots.update(code=404)
+    monkeypatch.setattr(web, "_robots", {})
+
+    async def stalled(method, url, **kw):
+        if url.endswith("/robots.txt"):
+            return httpx.Response(404)
+        await asyncio.sleep(5)
+    monkeypatch.setattr(web, "http", stalled)
+    monkeypatch.setattr(web, "PAGE_DEADLINE", 0.3)
+    assert run(web.fetch_page("https://1.1.1.1/slow")) is None
 
 
 def test_financial_figures_need_the_exact_value_the_right_metric_and_the_right_company():
@@ -380,11 +414,18 @@ def test_messages_are_signed_kept_under_linkedin_limit_rewritten_and_tracked(mon
         run(people.rewrite_message(ask(feedback="shorter"), tmp_path))
     m = run(people.save_lead(ask(saved=True), tmp_path))["people"][0]["message"]
     assert len(calls) == 2 and "320 characters" in calls[1][1]  # too long: rewritten once, not cut
-    assert m["linkedin_note"] == "short note" and m["followup"] == "f" and m["usd"] == 0.004
+    assert m["linkedin_note"] == "short note" and m["usd"] == 0.004
+    # Every email and follow-up ends with the privacy notice (GDPR Article 14), added in code, exactly once.
+    monkeypatch.setenv("PRIVACY_POLICY_URL", "https://example.com/privacy")
+    assert m["email"].startswith("e\n\n-- \n") and m["followup"].startswith("f\n\n-- \n") and "reply \"no\"" in m["email"]
+    assert "Never add an unsubscribe" in calls[0][0]
     assert 'signed "Asha Rao"' in calls[0][0]
     assert "How the product helps them grow: Acme could answer calls 24/7 like Beta." in calls[0][1] and 'Beta: Automated support calls. Result: wait times halved (quote: "Beta cut wait times by half")' in calls[0][1] and "Way to grow: Answer calls at night -> more orders" in calls[0][1]
     run(people.rewrite_message(ask(feedback="mention their hiring"), tmp_path))
     assert "mention their hiring" in calls[-1][1] and '"linkedin_note":"short note"' in calls[-1][1]  # sees the current draft
+    assert "-- " not in calls[-1][1].split("Current draft:")[1]  # ...without the notice, which is added back after
+    m = read(tmp_path / f"{run_id}.json")["companies"][0]["people"][0]["message"]
+    assert m["email"].count("\n-- \n") == 1 and "https://example.com/privacy" in m["email"]
     with pytest.raises(ValueError, match="Say what to change"):
         run(people.rewrite_message(ask(feedback=" "), tmp_path))
     assert run(people.mark_outreach(ask(status="sent"), tmp_path))["people"][0]["outreach"]["status"] == "sent"
@@ -589,10 +630,10 @@ def test_the_case_study_runs_on_demand_and_keeps_only_proven_companies(monkeypat
     page = "Nuvama Wealth is a wealth management firm serving HNI and UHNI clients in India. Nuvama Wealth revenue rose to Rs 2,901 crore in FY25, up 24%."
     queries = []
 
-    async def fake_search(query, max_results=8, about="", also_exa=False):
-        queries.append((query, also_exa))
+    async def fake_search(query, max_results=8, about=""):
+        queries.append(query)
         return {"rows": [{"url": "https://rank.example/top-wealth", "title": "Top wealth firms", "snippet": page},
-                         {"url": "https://growjo.com/x", "title": "IMMPL competitors", "snippet": "Sayari Labs revenue $64.8M"}], "provider": "donsetch+exa", "cost": 0.007 if also_exa else 0}
+                         {"url": "https://growjo.com/x", "title": "IMMPL competitors", "snippet": "Sayari Labs revenue $64.8M"}], "provider": "exa", "cost": 0.007}
 
     async def fake_fetch(url, max_chars=6000):
         return None
@@ -610,8 +651,8 @@ def test_the_case_study_runs_on_demand_and_keeps_only_proven_companies(monkeypat
     got = run(people.case_study({"run_id": run_id, "company_id": "c1"}, tmp_path))
     assert got["case_study"]["name"] == "Nuvama Wealth" and got["similar_companies"] == ["Nuvama Wealth"]
     assert got["case_study"]["implemented"] == ["Opened UHNI offices in 3 cities", "Moved client reporting to a digital platform"]
-    assert got["case_study_search"]["found"] and got["case_study_search"]["usd"] == 0.034
-    assert any(exa for _, exa in queries) and "wealth management for HNI families" in queries[0][0]
+    assert got["case_study_search"]["found"] and got["case_study_search"]["usd"] == 0.041
+    assert "wealth management for HNI families" in queries[0]
 
 
 def test_a_case_study_quote_may_join_bullet_points_if_every_part_is_on_the_page():
@@ -736,8 +777,8 @@ def test_finding_companies_from_an_icp_keeps_only_named_ones_and_never_repeats(m
     monkeypatch.setenv("EXA_API_KEY", "x")
     seen = {}
 
-    async def fake_search(query, max_results=8, about="", also_exa=False):
-        return {"rows": [{"url": "https://lists.example/top-saas-bengaluru", "title": "Top SaaS companies in Bengaluru", "snippet": "Freshworks, Zoho, Chargebee and Darwinbox are leading SaaS firms in Bengaluru."}], "provider": "donsetch", "cost": 0}
+    async def fake_search(query, max_results=8, about=""):
+        return {"rows": [{"url": "https://lists.example/top-saas-bengaluru", "title": "Top SaaS companies in Bengaluru", "snippet": "Freshworks, Zoho, Chargebee and Darwinbox are leading SaaS firms in Bengaluru."}], "provider": "exa", "cost": 0}
 
     async def fake_exa(query, max_results, category=None):
         seen["category"] = category
@@ -780,13 +821,13 @@ def test_the_chat_lists_researched_companies_answers_from_research_and_keeps_his
         sent.append((context, messages))
         return {"text": f"Answer {len(sent)}", "usage": {"usd": 0.001}}
 
-    async def fake_donsetch(query, max_results):
-        return {"rows": [{"url": "https://news.example/acme", "title": "Acme expands", "snippet": "Acme opens a Dubai office."}], "cost": 0}
+    async def fake_search(query, max_results=8, about=""):
+        return {"rows": [{"url": "https://news.example/acme", "title": "Acme expands", "snippet": "Acme opens a Dubai office."}], "provider": "exa", "cost": 0.007}
 
     async def fake_fetch(url, max_chars=6000):
         return None
     monkeypatch.setattr(chat_mod, "ask_text", fake_ask)
-    monkeypatch.setitem(web_mod.engines, "donsetch", fake_donsetch)
+    monkeypatch.setattr(web_mod, "search", fake_search)
     monkeypatch.setattr(web_mod, "fetch_page", fake_fetch)
     ask = {"run_id": run_id, "company_id": "c1"}
     assert run(chat_mod.chat(ask, tmp_path))["chat"] == [] and not sent  # opening a company costs nothing
@@ -795,6 +836,7 @@ def test_the_chat_lists_researched_companies_answers_from_research_and_keeps_his
     assert [m["text"] for m in got["chat"]] == ["How can they grow?", "Answer 1"]
     got = run(chat_mod.chat({**ask, "question": "Any news?", "web": True}, tmp_path))
     assert "Dubai office" in sent[1][1][-1]["content"] and got["chat"][-1]["sources"] == ["https://news.example/acme"]
+    assert got["chat"][-1]["usd"] == pytest.approx(0.008)  # the paid web search is counted in the answer's cost
     assert [m["role"] for m in sent[1][1]] == ["user", "assistant", "user"]  # follow-ups carry the conversation
     for i in range(30):
         run(chat_mod.chat({**ask, "question": f"q{i}"}, tmp_path))
@@ -840,3 +882,145 @@ def test_the_company_profile_is_made_once_cached_and_written_as_a_word_file(monk
     assert "What sets you apart" not in text  # empty sections are left out
     with pytest.raises(ValueError, match="Describe your product"):
         run(profile.company_profile({}, tmp_path))
+
+
+def test_the_official_register_match_is_strict_and_never_slows_or_breaks_research(monkeypatch):
+    from agent import registry
+
+    def rec(lei, name, country="IN", status="ACTIVE"):
+        return {"id": lei, "attributes": {"entity": {"legalName": {"name": name}, "legalAddress": {"country": country}, "status": status}}}
+    # Brand + legal suffix, or + one filler word, is the company; a business line, a foreign arm or a different firm is not.
+    assert registry.best_match([rec("A", "RAZORPAY SOFTWARE LIMITED")], "Razorpay", "India")["id"] == "A"
+    assert registry.best_match([rec("B", "INTERNATIONAL MONEY MATTERS PRIVATE LIMITED")], "International Money Matters Pvt Ltd (IMMPL)")["id"] == "B"
+    assert registry.best_match([rec("C", "PAYU FINANCE INDIA PRIVATE LIMITED")], "PayU India") is None
+    assert registry.best_match([rec("D", "SWIGGY INSTAMART PRIVATE LIMITED")], "Swiggy") is None
+    assert registry.best_match([rec("E", "JUSPAY EUROPE LIMITED", "IE"), rec("F", "JUSPAY TECHNOLOGIES PRIVATE LIMITED")], "Juspay")["id"] == "F"
+    assert registry.best_match([rec("G", "THE POSTMAN GCV", "BE")], "Postman, Inc.") is None
+    assert registry.best_match([rec("H", "ACME LIMITED", status="INACTIVE")], "Acme") is None
+    # Exact beats filler; the home country breaks a tie; a tie nothing breaks is no match.
+    assert registry.best_match([rec("I", "ZOHO TECHNOLOGIES CORPORATION", "US"), rec("J", "ZOHO CORPORATION PRIVATE LIMITED")], "Zoho Corporation")["id"] == "J"
+    assert registry.best_match([rec("K", "ACME LTD", "GB"), rec("L", "ACME INC", "US")], "Acme", "United States")["id"] == "L"
+    assert registry.best_match([rec("K", "ACME LTD", "GB"), rec("L", "ACME INC", "US")], "Acme") is None
+    holding = [rec("M", "RAZORPAY, INC.", "US"), rec("N", "RAZORPAY SOFTWARE LIMITED")]
+    assert registry.best_match(holding, "Razorpay", "Bengaluru, India")["id"] == "N" and registry.best_match(holding, "Razorpay")["id"] == "M"
+
+    def handler(method, url, body):
+        if "direct-parent" in url:
+            return httpx.Response(404)
+        if "ultimate-parent" in url:
+            return httpx.Response(200, json={"data": {"attributes": {"entity": {"legalName": {"name": "JUSPAY HOLDINGS LTD"}}}}})
+        return httpx.Response(200, json={"data": [rec("F", "JUSPAY TECHNOLOGIES PRIVATE LIMITED")]})
+    calls = fake_http(monkeypatch, handler)
+    got = run(registry.legal_entity("Juspay", "India"))
+    assert got == {"lei": "F", "legal_name": "JUSPAY TECHNOLOGIES PRIVATE LIMITED", "country": "IN", "parent": None, "ultimate_parent": "JUSPAY HOLDINGS LTD", "source": "GLEIF"}
+    assert all(u.startswith("https://api.gleif.org/") for u in calls)
+    assert registry.owners(got) == ["JUSPAY TECHNOLOGIES PRIVATE LIMITED", "JUSPAY HOLDINGS LTD"] and registry.owners(None) == []
+    # Register down or too slow: no entity, no exception, and the wait is capped.
+    fake_http(monkeypatch, lambda m, url, b: httpx.Response(503))
+    assert run(registry.legal_entity("Juspay", "India")) is None
+
+    async def slow(*a, **k):
+        await asyncio.sleep(5)
+    monkeypatch.setattr(web, "http", slow)
+    monkeypatch.setattr(registry, "TIMEOUT", 0.2)
+    assert run(registry.legal_entity("Juspay", "India")) is None
+
+
+def test_a_deleted_lead_is_erased_everywhere_and_never_looked_up_again(monkeypatch, tmp_path):
+    from agent import people, privacy
+    monkeypatch.setenv("HUNTER_API_KEY", "x")
+    old_run, run_id = "66666666-6666-6666-6666-666666666666", "77777777-7777-7777-7777-777777777777"
+    jo = {"id": "hunter:jo@acme.com", "name": "Jo Li", "title": "VP Support", "email": "Jo@Acme.com", "source": "hunter", "saved": True, "checked_at": "2026-11-01T00:00:00.000Z"}
+    al = {"id": "hunter:al@acme.com", "name": "Al Ray", "title": "CTO", "email": "al@acme.com", "source": "hunter", "checked_at": "2026-11-01T00:00:00.000Z"}
+
+    def result(rid, persons):
+        return {"run": {"run_id": rid, "mode": "named_companies", "duration_s": 1}, "campaign": {"generated_at": "2026-11-01T00:00:00.000Z", "title": "t", "icp": {"product": "p"}}, "failed": [],
+                "companies": [{"id": f"c-{rid[:2]}", "name": "Acme", "domain": "acme.com", "people": persons, "review": {"decision": "accepted", "decided_at": "2026-11-01T00:00:00.000Z"}, "score_breakdown": {}, "evidence": [], "buyer_titles": ["VP Support"], "buyer_departments": []}]}
+    write(tmp_path / f"{old_run}.json", result(old_run, [dict(jo, email="jo@acme.com")]))
+    write(tmp_path / f"{run_id}.json", result(run_id, [dict(jo), dict(al)]))
+    write(tmp_path / "leads.json", result(run_id, [dict(jo), dict(al)]))
+    from agent.db import ORG, PROJECT
+    db = open_db(db_file(tmp_path))
+    with db:
+        db.execute("INSERT INTO people (id, organization_id, project_id, provider_id, name, email, status, last_checked) VALUES ('p1', ?, ?, ?, 'Jo Li', 'jo@acme.com', 'verified', 'x')", (ORG, PROJECT, jo["id"]))
+    assert db.execute("SELECT count(*) FROM people WHERE lower(email) = 'jo@acme.com'").fetchone()[0] == 1
+
+    company = run(people.forget({"run_id": run_id, "company_id": "c-77", "person_id": jo["id"]}, tmp_path))
+    assert [p["name"] for p in company["people"]] == ["Al Ray"]
+    for f in (f"{old_run}.json", f"{run_id}.json", "leads.json"):  # every copy, any run, any email case
+        assert "Jo Li" not in (tmp_path / f).read_text(encoding="utf-8")
+    assert db.execute("SELECT count(*) FROM people WHERE lower(email) = 'jo@acme.com'").fetchone()[0] == 0
+    stored = (tmp_path / "suppressed.json").read_text(encoding="utf-8")
+    assert "acme" not in stored and all(re.fullmatch(r"[0-9a-f]{64}", h) for h in json.loads(stored))  # only one-way hashes kept
+    assert privacy.is_suppressed({"email": "JO@acme.com"}, "acme.com", tmp_path) and privacy.is_suppressed({"name": "jo li"}, "acme.com", tmp_path)
+    assert not privacy.is_suppressed({"email": "al@acme.com", "name": "Al Ray"}, "acme.com", tmp_path)
+
+    # A later lookup that returns them again never adds them back.
+    fake_http(monkeypatch, lambda m, url, b: httpx.Response(200, json={"data": {"emails": [
+        {"value": "jo@acme.com", "first_name": "Jo", "last_name": "Li", "position": "VP Support"},
+        {"value": "new@acme.com", "first_name": "Ny", "last_name": "Boss", "position": "Chief Operating Officer"}], "meta": {"results": 2}}}))
+    found = run(people.enrich_company({"run_id": run_id, "company_id": "c-77", "provider": "hunter"}, tmp_path))
+    assert "Jo Li" not in [p["name"] for p in found["people"]] and "Ny Boss" in [p["name"] for p in found["people"]]
+    with pytest.raises(ValueError, match="Unknown lead"):
+        run(people.forget({"run_id": run_id, "company_id": "c-77", "person_id": "nobody"}, tmp_path))
+
+
+def test_old_leads_are_deleted_after_the_retention_period_and_old_messages_get_the_notice(tmp_path):
+    from datetime import datetime, timezone
+    from agent import privacy
+    run_id = "88888888-8888-8888-8888-888888888888"
+    now = datetime(2026, 11, 26, tzinfo=timezone.utc)
+    persons = [
+        {"id": "old", "name": "Old Found", "checked_at": "2025-01-01T00:00:00.000Z"},  # found long ago, never contacted
+        {"id": "new", "name": "New Found", "checked_at": "2026-11-01T00:00:00.000Z"},
+        {"id": "sent", "name": "Contacted Lately", "checked_at": "2025-01-01T00:00:00.000Z", "outreach": {"status": "sent", "at": "2026-10-01T00:00:00.000Z"}},
+        {"id": "msg", "name": "Has Draft", "source": "apollo", "checked_at": "2026-11-20T00:00:00.000Z", "saved": True, "message": {"email": "Hi", "followup": "Thanks"}},
+    ]
+    write(tmp_path / f"{run_id}.json", {"run": {"run_id": run_id}, "companies": [{"id": "c1", "domain": "acme.com", "people": persons}]})
+    assert privacy.sweep(tmp_path, days=365, now=now) == 1
+    kept = read(tmp_path / f"{run_id}.json")["companies"][0]["people"]
+    assert [p["id"] for p in kept] == ["new", "sent", "msg"]  # contacted people count from the contact date
+    assert kept[2]["message"]["email"].startswith("Hi\n\n-- \nI found your work contact details through Apollo.io")
+    assert privacy.sweep(tmp_path, days=365, now=now) == 0 and read(tmp_path / f"{run_id}.json")["companies"][0]["people"][2]["message"]["email"].count("\n-- \n") == 1
+    assert privacy.sweep(tmp_path, days=30, now=now) == 1  # "sent" was contacted 56 days ago
+
+
+def test_buying_roles_are_inferred_hypotheses_with_capped_confidence_and_are_erased_with_the_person(monkeypatch, tmp_path):
+    from agent import people, roles
+    assert roles.score({"budget_ownership": 4, "decision_authority": 4, "functional_ownership": 4, "influence": 4, "advocacy": 4}) == 100
+    assert roles.score({"budget_ownership": 2, "decision_authority": 2, "functional_ownership": 0, "influence": 4, "advocacy": 9}) == 55  # 12.5+12.5+0+20+10
+    run_id = "99999999-9999-9999-9999-999999999999"
+    persons = [{"id": "p1", "name": "Ravi Kumar", "title": "CTO", "source": "hunter", "checked_at": "2026-11-20T00:00:00.000Z"},
+               {"id": "p2", "name": "Mia Sen", "title": "Head of Procurement", "source": "hunter", "saved": True, "outreach": {"status": "sent", "at": "2026-11-21T00:00:00.000Z"}, "checked_at": "2026-11-20T00:00:00.000Z"}]
+    evidence = [{"status": "verified", "quote": "CTO Ravi Kumar said the platform team doubled"}, {"status": "verified", "quote": "Ravi Kumar leads a 300-person engineering org"}]
+    write(tmp_path / f"{run_id}.json", {"run": {"run_id": run_id}, "campaign": {"icp": {"product": "AI-first managed engineering services"}},
+                                        "companies": [{"id": "c1", "name": "Acme", "domain": "acme.com", "people": persons, "evidence": evidence, "review": {"decision": "accepted"}}]})
+    seen = {}
+
+    async def fake_ask(system, prompt, schema, **_):
+        seen["prompt"] = prompt
+        seen["calls"] = seen.get("calls", 0) + 1
+        return {"data": {"buying_motion": "it services", "category": "Managed Services", "why_motion": "Services.", "people": [
+            {"person_id": "p1", "primary_role": "decision maker", "secondary_role": "Economic Buyer", "decision_authority": "High", "technical_influence": "high", "budget_ownership": "likely",
+             "business_interest": "productivity", "scores": {"budget_ownership": 3, "decision_authority": 4, "functional_ownership": 4, "influence": 3, "advocacy": 7}, "confidence": "high",
+             "entry_point": True, "why": "CTO owns engineering.", "known": ["Title: CTO"], "assumed": ["Approves vendors"]},
+            {"person_id": "p2", "primary_role": "Buyer / Procurement", "secondary_role": "Buyer / Procurement", "decision_authority": "medium", "technical_influence": "low", "budget_ownership": "made up",
+             "business_interest": "cost", "scores": {}, "confidence": "high", "entry_point": False, "why": "Procurement.", "known": [], "assumed": []},
+            {"person_id": "nobody", "primary_role": "Champion"}]}, "usage": {"usd": 0.012}}
+    monkeypatch.setattr(roles, "ask_json", fake_ask)
+    ask = {"run_id": run_id, "company_id": "c1"}
+    bc = run(roles.buying_roles(ask, tmp_path))["buying_committee"]
+    assert "Ravi Kumar, CTO | public quotes naming them" in seen["prompt"]  # only title + company facts + public quotes go in
+    assert bc["buying_motion"] == "IT Services" and set(bc["people"]) == {"p1", "p2"}  # unknown ids are dropped
+    ravi, mia = bc["people"]["p1"], bc["people"]["p2"]
+    assert ravi["primary_role"] == "Decision Maker" and ravi["confidence"] == "high" and ravi["score"] == 89 and ravi["scores"]["advocacy"] == 4
+    # Mia has no public mentions: "high" is capped; a secondary role equal to the primary and an unknown value are cleaned up.
+    assert mia["confidence"] == "medium" and mia["secondary_role"] == "" and mia["budget_ownership"] == "unknown" and mia["score"] == 0
+    run(roles.buying_roles(ask, tmp_path))  # nothing new to classify: no second call
+    assert seen["calls"] == 1
+    # Deleting a person also deletes their classification.
+    company = run(people.forget({**ask, "person_id": "p1"}, tmp_path))
+    assert list(company["buying_committee"]["people"]) == ["p2"]
+    with pytest.raises(ValueError, match="Find leads first"):
+        write(tmp_path / f"{run_id}.json", {"run": {"run_id": run_id}, "companies": [{"id": "c1", "people": []}]})
+        run(roles.buying_roles(ask, tmp_path))
