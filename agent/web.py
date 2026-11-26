@@ -167,6 +167,27 @@ async def exa_search(query, max_results, category=None):
     }
 
 
+PARALLEL_MODE = "basic"  # $5 per 1,000 searches; the only mode Parallel's EU endpoint (eu.parallel.ai) supports
+PARALLEL_PRICE = {"turbo": 0.001, "fast": 0.001, "basic": 0.005, "advanced": 0.005}
+
+
+async def parallel_search(query, max_results):
+    """Parallel's official Search API (POST /v1/search), mapped to the same rows as exa_search."""
+    async def go():
+        res = await http("POST", "https://api.parallel.ai/v1/search", headers={"Content-Type": "application/json", "x-api-key": os.environ.get("PARALLEL_API_KEY", "")},
+                         json_body={"search_queries": [query], "mode": PARALLEL_MODE, "max_chars_total": 1200 * max_results,
+                                    "advanced_settings": {"max_results": max_results}}, timeout=30)
+        if not res.is_success:
+            raise RuntimeError(f"Parallel returned {res.status_code}")
+        return res.json()
+    cost = lambda raw: PARALLEL_PRICE[PARALLEL_MODE] * sum(u.get("count") or 0 for u in raw.get("usage") or [] if u.get("name") == "sku_search")
+    data = await recorded("parallel", "search", {"query": query, "max": max_results}, go, lambda raw: {"cost": cost(raw)})
+    return {
+        "rows": [{"title": r.get("title") or "", "url": r.get("url"), "snippet": " ".join(r.get("excerpts") or []), "date": r.get("publish_date") or ""} for r in data.get("results") or []],
+        "cost": cost(data),
+    }
+
+
 def _plain(s):
     return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
 
@@ -174,18 +195,21 @@ def _plain(s):
 async def search(query, max_results=8, about=""):
     """Web search through Exa's official, keyed API (its own index, licensed for automated use; no search engine is
     scraped). Results that mention `about` (the company) come first. No key or an Exa error -> no rows; callers handle that."""
-    if not os.environ.get("EXA_API_KEY"):
-        warn("Web search is off: set EXA_API_KEY in .env")
+    provider = (os.environ.get("SEARCH_PROVIDER") or "exa").strip().lower()
+    engine, key = {"parallel": (parallel_search, "PARALLEL_API_KEY")}.get(provider, (exa_search, "EXA_API_KEY"))
+    provider = "parallel" if engine is parallel_search else "exa"
+    if not os.environ.get(key):
+        warn(f"Web search is off: set {key} in .env")
         return {"rows": [], "provider": "none", "cost": 0}
     try:
-        got = await exa_search(query, max_results)
+        got = await engine(query, max_results)
     except Exception as error:  # noqa: BLE001 - one failed search must not stop the run
-        warn(f"exa search failed: {str(error)[:200]}")
+        warn(f"{provider} search failed: {str(error)[:200]}")
         return {"rows": [], "provider": "none", "cost": 0}
     name = re.sub(r" (inc|llc|ltd|corp|corporation|company|pvt|private|limited)$", "", _plain(about))
     rows = [r for r in got["rows"] if fetchable(r["url"])]
     rows = sorted(rows, key=lambda r: bool(name) and name not in _plain(f"{r['title']} {r['snippet']} {r['url']}"))[:max_results]
-    return {"rows": rows, "provider": "exa" if rows else "none", "cost": got["cost"]}
+    return {"rows": rows, "provider": provider if rows else "none", "cost": got["cost"]}
 
 
 PAGE_DEADLINE = 25  # seconds for one page, retries included: one stalled site must not hold up a whole run

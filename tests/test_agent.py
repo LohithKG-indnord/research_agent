@@ -1024,3 +1024,21 @@ def test_buying_roles_are_inferred_hypotheses_with_capped_confidence_and_are_era
     with pytest.raises(ValueError, match="Find leads first"):
         write(tmp_path / f"{run_id}.json", {"run": {"run_id": run_id}, "companies": [{"id": "c1", "people": []}]})
         run(roles.buying_roles(ask, tmp_path))
+
+
+def test_search_can_use_parallels_official_api_instead_of_exa(monkeypatch):
+    sent = {}
+
+    def handler(method, url, body):
+        sent["url"], sent["body"] = url, body
+        return httpx.Response(200, json={"search_id": "s1", "session_id": "x", "usage": [{"name": "sku_search", "count": 1}], "results": [
+            {"url": "https://acme.com/about", "title": "About Acme", "publish_date": "2026-01-02", "excerpts": ["Acme makes", "widgets"]},
+            {"url": "https://www.linkedin.com/company/acme", "title": "Acme | LinkedIn", "excerpts": ["x"]}]})
+    fake_http(monkeypatch, handler)
+    monkeypatch.setenv("SEARCH_PROVIDER", "parallel")
+    assert run(search("q", 5))["provider"] == "none"  # no key: nothing searched
+    monkeypatch.setenv("PARALLEL_API_KEY", "k")
+    r = run(search("acme news", 5, "Acme"))
+    assert sent["url"] == "https://api.parallel.ai/v1/search" and sent["body"]["search_queries"] == ["acme news"] and sent["body"]["mode"] == "basic"
+    assert sent["body"]["advanced_settings"] == {"max_results": 5}
+    assert r == {"rows": [{"title": "About Acme", "url": "https://acme.com/about", "snippet": "Acme makes widgets", "date": "2026-01-02"}], "provider": "parallel", "cost": 0.005}

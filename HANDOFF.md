@@ -31,7 +31,7 @@ python server.py         # http://localhost:3000 (set PORT=3001 if 3000 is taken
 ```
 
 - Command line: `python cli.py "Zoho, zoho.com" --product "..." [--criteria "..."] [--fresh]`
-- Tests: `python -m pytest -q`. There are 39 tests; all are offline and free.
+- Tests: `python -m pytest -q`. There are 40 tests; all are offline and free.
 
 `.env` keys:
 
@@ -41,6 +41,7 @@ python server.py         # http://localhost:3000 (set PORT=3001 if 3000 is taken
 | `CLAUDE_MODEL` | Model for judgement (research, scoring, messages, notes, growth plans). Defaults to `claude-sonnet-5-5` (Claude Sonnet 5.5). |
 | `CHAT_MODEL` | Model for the chat assistant. Defaults to `claude-haiku-5-5`. |
 | `EXA_API_KEY` | **Required for web search.** Exa's official API, about $0.007 per search. |
+| `SEARCH_PROVIDER` / `PARALLEL_API_KEY` | Optional. `exa` (default) or `parallel` to use Parallel's Search API for research searches. Off by default; tested as a possible replacement (see README). |
 | `CRAWLER_CONTACT` | A URL or email shown to website owners in the agent's User-Agent. Set it for production. |
 | `HUNTER_API_KEY` / `APOLLO_API_KEY` | Lead lookups. Apollo needs a paid plan. |
 | `SENDER_NAME` / `SENDER_TITLE` / `SENDER_COMPANY` | Signature for outreach messages. |

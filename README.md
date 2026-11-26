@@ -92,6 +92,8 @@ Score weights (`WEIGHTS` in `agent/pipeline.py`): has the problem 30, profile fi
 
 **Search.** All web search goes through Exa's official API (its own index, licensed for automated use, about $0.007 per search). The agent never scrapes a search engine. Without `EXA_API_KEY` there is no search, and a company is researched only from a website you give.
 
+**Optional: Parallel search (off by default).** Set `SEARCH_PROVIDER=parallel` and `PARALLEL_API_KEY` in `.env` to send research searches to Parallel's official Search API instead ("basic" mode, about $0.005 per search; its EU endpoint supports this mode). Remove the line or set it to `exa` to switch back. The ICP tab's company-only search always uses Exa. In a 25-search test on 5 past companies, Parallel returned rich text for 97% of results (Exa: 74%), found every official website (Exa: 4 of 5) and cost 29% less, but took about 0.6 s longer per search. A full research comparison hasn't been run yet.
+
 **Official register (GLEIF).** While pages are read, the agent looks the company up in GLEIF, the official global register of Legal Entity Identifiers (open data, free, no key). The lookup has three effects:
 
 - When it finds the company, the card shows the registered legal name and country, the owner when the register records one, and a link to the record.
